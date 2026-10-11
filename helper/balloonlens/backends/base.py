@@ -136,14 +136,16 @@ class ProcessRunner:
     def __init__(self, popen=subprocess.Popen):
         self._popen = popen
         self._lock = threading.Lock()
-        self._active = None
+        # Several subscription CLI calls may run simultaneously.
+        # Keep every child so cancellation does not miss older processes.
+        self._active = set()
 
     def run(self, argv: Sequence[str], *, stdin: bytes, cwd, env: Mapping[str, str], timeout: float) -> ProcResult:
         started = time.monotonic()
         proc = self._popen(list(argv), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                            cwd=str(cwd), env=dict(env), shell=False, **_NO_WINDOW)
         with self._lock:
-            self._active = proc
+            self._active.add(proc)
         timed_out = False
         try:
             out, err = proc.communicate(input=stdin, timeout=timeout)
@@ -153,13 +155,13 @@ class ProcessRunner:
             out, err = proc.communicate()
         finally:
             with self._lock:
-                self._active = None
+                self._active.discard(proc)
         return ProcResult(proc.returncode, out or b"", err or b"", round(time.monotonic() - started, 2), timed_out)
 
     def cancel(self) -> None:
         with self._lock:
-            proc = self._active
-        if proc is not None:
+            procs = list(self._active)
+        for proc in procs:
             kill_tree(proc)
 
 

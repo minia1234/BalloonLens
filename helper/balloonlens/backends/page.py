@@ -101,7 +101,7 @@ class CliTranslator:
                               seconds=seconds, outcome=outcome, retry_after=retry_after)
 
     def call_json(self, system, payload, *, model, schema_json=prompts.PAGE_SCHEMA_JSON, schema_name="page",
-                  lines=0):
+                  lines=0, should_cancel=None):
         """One guarded CLI call: quota check, start spacing, the call, then the usage record. Translation and
         suggestions use it.
 
@@ -110,6 +110,8 @@ class CliTranslator:
         neither overshoot a cap nor start in one burst. A blocked call starts no process and is not counted."""
         with self._slots:
             with self._gate:
+                if should_cancel is not None and should_cancel():
+                    raise BackendError("cancelled")
                 if self.quota is not None:
                     self.quota.check(self.backend.backend_id, pending=self._inflight)
                 now = time.monotonic()
@@ -119,6 +121,9 @@ class CliTranslator:
             try:
                 if start_at > now:
                     time.sleep(start_at - now)
+                # A job can be cancelled while waiting for the call-start gap.
+                if should_cancel is not None and should_cancel():
+                    raise BackendError("cancelled")
                 started = time.time()
                 try:
                     res = self.backend.complete_json(system, payload, model=model, schema_json=schema_json,
@@ -141,7 +146,8 @@ class CliTranslator:
         while True:
             attempts += 1
             try:
-                res = self.call_json(system, prompts.encode_payload(body), model=model, lines=len(ids))
+                res = self.call_json(system, prompts.encode_payload(body), model=model, lines=len(ids),
+                                     should_cancel=should_cancel)
             except BackendError as e:
                 meta["error"] = e.code
                 meta["network_errors"].append(e.code)
