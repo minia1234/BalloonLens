@@ -1,6 +1,6 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {fitText, workSettings, nextFontScale, needsRetry, speechPreset, sourceFrame, sourceFontSize, validateBackup} = require('../extension/reading.js');
+const {fitText, fitGrowing, workSettings, nextFontScale, needsRetry, speechPreset, sourceFrame, sourceFontSize, validateBackup} = require('../extension/reading.js');
 
 test('settings backup keeps only known, valid values', () => {
   const r = validateBackup({app: 'BalloonLens', settings: {
@@ -58,6 +58,33 @@ test('below the readable floor it still reports overflow instead of shrinking fu
   const r = fitText('아직 이야기가 끝나지 않았어. 조금만 더 기다려 줘.', 46, 40, measure, 1);
   assert.ok(r.overflow);
   assert.ok(r.size >= 11);
+});
+// Hangul-heavy translations are wider than the OCR box, so the plain fit cuts them (the bug the reader saw).
+test('a line cut by its box grows around the box and then shows whole at a readable size', () => {
+  const text = '아직 이야기가 끝나지 않았어요. 조금만 더 기다려 주세요.';
+  assert.ok(fitText(text, 60, 45, malgun, 1).overflow);
+  const r = fitGrowing(text, 60, 45, 1000, 1000, malgun, 1);
+  assert.equal(r.overflow, false);
+  assert.ok(r.size >= 14);
+  assert.ok(r.width > 60 && r.width <= 120 && r.height > 45 && r.height <= 90);
+  assert.ok(r.lines.every(line => malgun(line, r.size) <= r.width));
+});
+test('growth never passes the image size, and a line that still does not fit is reported', () => {
+  const r = fitGrowing('아직 이야기가 끝나지 않았어요. 조금만 더 기다려 주세요.', 60, 45, 70, 50, malgun, 1);
+  assert.ok(r.width <= 70 && r.height <= 50);
+  assert.ok(r.overflow);
+});
+test('a line that already fits at a readable size keeps its box', () => {
+  const r = fitGrowing('어디로 가는 거야?', 150, 110, 400, 400, measure, 1);
+  assert.equal(r.width, 150);
+  assert.equal(r.height, 110);
+  assert.equal(r.overflow, false);
+});
+test('a line that fits only at a small size grows until the font is readable', () => {
+  const r = fitGrowing('도대체 무슨 일이 일어난 거야? 설명해 줄 사람이 없어?', 90, 70, 1000, 1000, malgun, 1);
+  assert.equal(r.overflow, false);
+  assert.ok(r.size >= 14);
+  assert.ok(r.width > 90 || r.height > 70);
 });
 test('work profiles match URL boundaries and longest prefix, not sibling works', () => {
   const profiles = [

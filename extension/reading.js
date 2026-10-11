@@ -92,6 +92,27 @@
     }
     return wrap(min);
   }
+  // A line that does not fit its box (or fits only in a font below the readable size) may get a bigger box, grown
+  // around the original one by these factors on both sides and never past the image. The smallest box that shows
+  // the whole line at a readable size wins. fitText stays the strict fit; this is the one the page uses.
+  const GROW_STEPS = [1.25, 1.5, 1.75, 2];
+  function fitGrowing(text, width, height, maxWidth, maxHeight, measure, scale = 1, preferredSize = 26) {
+    const readable = Math.min(14 * scale, Math.max(11, Math.min(26, preferredSize)) * scale);
+    const plain = fitText(text, width, height, measure, scale, preferredSize);
+    const original = {...plain, width, height};
+    if (!plain.overflow && plain.size >= readable) return original;
+    let fallback = plain.overflow ? null : original; // whole line, but not at a readable size
+    let last = original;
+    for (const k of GROW_STEPS) {
+      const w = Math.max(width, Math.min(maxWidth, width * k));
+      const h = Math.max(height, Math.min(maxHeight, height * k));
+      const grown = {...fitText(text, w, h, measure, scale, preferredSize), width: w, height: h};
+      if (!grown.overflow && grown.size >= readable) return grown;
+      if (!grown.overflow && !fallback) fallback = grown;
+      last = grown;
+    }
+    return fallback || last;
+  }
   function nextFontScale(value, action) {
     if (action === 'reset') return 1;
     return Math.round(Math.max(.7, Math.min(1.5, (Number(value) || 1)+(action==='up' ? .1 : -.1)))*10)/10;
@@ -217,7 +238,7 @@
     if (next && !next.queued && !readAheadBusy) plan.push({item: next, priority: 3});
     return plan;
   }
-  globalThis.BalloonLensReading = {fitText, sourceFrame, sourceFontSize, workSettings, nextFontScale, needsRetry, speechPreset,
+  globalThis.BalloonLensReading = {fitText, fitGrowing, sourceFrame, sourceFontSize, workSettings, nextFontScale, needsRetry, speechPreset,
     validateBackup, BACKUP_KEYS, CONSENT_VERSION, CONSENT_TEXT, MODEL_INFO, MODEL_IDS, REVIEW_MODES, isSubscription,
     stateLabel, explainCode, planReadAhead};
   if (typeof module !== 'undefined') module.exports = globalThis.BalloonLensReading;

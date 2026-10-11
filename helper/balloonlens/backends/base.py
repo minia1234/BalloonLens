@@ -12,7 +12,9 @@ import re
 import subprocess
 import threading
 import time
+import uuid
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Mapping, Sequence
 
 # Codes that stop every further call to that backend until the reader fixes the cause.
@@ -54,6 +56,24 @@ def api_key_vars_present(source: Mapping[str, str]) -> list[str]:
 
 def digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def write_once(path, text: str):
+    """Creates path with text unless it already exists. The text goes to a temp file first, so a reader never sees
+    half a file. Parallel calls can race here: the file a winner created has the same text, so a loser can stop."""
+    path = Path(path)
+    if path.exists():
+        return path
+    tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    try:
+        os.replace(tmp, path)
+    except OSError:
+        if not path.exists():  # the rename failed for another reason
+            raise
+    finally:
+        tmp.unlink(missing_ok=True)
+    return path
 
 
 class BackendError(RuntimeError):

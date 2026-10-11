@@ -82,15 +82,17 @@ class QuotaPolicy:
         self.cache.clear_pause(name)
 
     # ----- gate -----
-    def check(self, name: str):
-        """Raises BackendError('quota_paused') when a pause or a cap blocks the next call."""
+    def check(self, name: str, pending: int = 0):
+        """Raises BackendError('quota_paused') when a pause or a cap blocks the next call.
+
+        pending counts calls already started but not yet recorded, so parallel calls cannot overshoot a cap."""
         pause = self.pause_info(name)
         if pause:
             raise BackendError("quota_paused", pause["reason"], retry_after=pause["retry_in_s"])
         now = self.clock()
         caps = self.caps(name)
         for window, limit, label in ((WINDOW_5H, caps["per_5h"], "5시간"), (WINDOW_7D, caps["per_7d"], "7일")):
-            if self.cache.count_usage(name, now - window) >= limit:
+            if self.cache.count_usage(name, now - window) + pending >= limit:
                 oldest = self.cache.oldest_usage(name, now - window)
                 retry = (oldest + window - now) if oldest else window
                 raise BackendError("quota_paused", f"{label} 호출 상한 {limit}회에 도달", retry_after=max(0.0, retry))

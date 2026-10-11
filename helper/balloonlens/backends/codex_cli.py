@@ -14,7 +14,7 @@ import uuid
 from pathlib import Path
 
 from .base import (BackendError, BackendStatus, ProcessRunner, api_key_vars_present, classify_failure, clean_env,
-                   normalize_usage, parse_json_loose)
+                   digest, normalize_usage, parse_json_loose, write_once)
 from .prompts import PAGE_SCHEMA_JSON, PROBE_SCHEMA
 
 DEFAULT_MODEL = "gpt-6-luna"
@@ -103,10 +103,8 @@ class CodexBackend:
                                timeout=timeout or self.timeout)
 
     def _schema_file(self, name: str, text: str) -> Path:
-        path = self.runtime_dir / f"{name}-schema.json"
-        if not path.exists() or path.read_text(encoding="utf-8") != text:
-            path.write_text(text, encoding="utf-8")
-        return path
+        # Keyed by content: a file name never gets two different texts, so parallel calls can share it safely.
+        return write_once(self.runtime_dir / f"{name}-{digest(text)[:12]}-schema.json", text)
 
     def cancel(self):
         self.runner.cancel()

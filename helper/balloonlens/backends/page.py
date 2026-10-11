@@ -2,10 +2,15 @@
 
 Callers see the same contract as the local Translator: on_result(id, text_or_None, status) per line, and
 a meta dict back. Nothing here sends images, and every reply passes the checks in validate.page_reasons.
+
+Calls run side by side: up to config.CLI_PARALLEL at once for one backend, shared by all pages. The chunks of one
+page go out together, and each still sees the whole page's source text. Only a single call at a time
+(CLI_PARALLEL=1) lets a later chunk also see the last lines translated before it.
 """
 import json
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .. import config
 from ..cache import tr_key
@@ -56,18 +61,39 @@ def _add_usage(total: dict, usage: dict):
         total[key] = total.get(key, 0) + int(usage.get(key, 0))
 
 
-MIN_CALL_GAP_S = 1.0  # at least one second between CLI calls to one backend (plan §8)
+def _new_meta() -> dict:
+    return {"calls": 0, "usage": {"input": 0, "output": 0, "cached": 0}, "network_errors": []}
+
+
+def _merge_meta(meta: dict, part: dict):
+    """Adds one chunk's counters to the page's meta. Chunks may run in threads, so each keeps its own counters."""
+    meta["calls"] += part["calls"]
+    _add_usage(meta["usage"], part["usage"])
+    meta["network_errors"].extend(part["network_errors"])
+    if part.get("error"):
+        meta["error"] = part["error"]
+    if part.get("fatal") and not meta.get("fatal"):
+        meta["fatal"] = part["fatal"]
+    for key in ("proofread_calls", "proofread_lines", "proofread_skipped"):
+        if key in part:
+            meta[key] = meta.get(key, 0) + part[key]
+
+
+MIN_CALL_GAP_S = 1.0  # at least one second between the starts of two CLI calls to one backend (plan §8)
 
 
 class CliTranslator:
-    def __init__(self, backend, cache, quota=None, *, chunk_size=prompts.MAX_LINES_PER_CALL):
+    def __init__(self, backend, cache, quota=None, *, chunk_size=prompts.MAX_LINES_PER_CALL, parallel=None):
         self.backend = backend
         self.cache = cache
         self.quota = quota
         self.chunk_size = chunk_size
-        self._lock = threading.Lock()  # one CLI call at a time per backend, so caps hold under concurrent requests
+        self.parallel = max(1, int(parallel or config.CLI_PARALLEL))
         self.min_gap = MIN_CALL_GAP_S
-        self._last_done = 0.0  # monotonic time when the previous call ended
+        self._slots = threading.BoundedSemaphore(self.parallel)  # CLI calls running at once
+        self._gate = threading.Lock()  # guards the start schedule and the in-flight count
+        self._next_start = 0.0  # monotonic time before which no call may start
+        self._inflight = 0
 
     def _record(self, model, lines, usage, seconds, outcome, retry_after=None):
         if self.quota is not None:
@@ -76,26 +102,35 @@ class CliTranslator:
 
     def call_json(self, system, payload, *, model, schema_json=prompts.PAGE_SCHEMA_JSON, schema_name="page",
                   lines=0):
-        """One guarded CLI call: quota check, the call, then the usage record. Translation and suggestions use it.
+        """One guarded CLI call: quota check, start spacing, the call, then the usage record. Translation and
+        suggestions use it.
 
-        The check comes first, so a blocked call starts no process and is not counted as usage."""
-        with self._lock:
-            if self.quota is not None:
-                self.quota.check(self.backend.backend_id)
-            wait = self._last_done + self.min_gap - time.monotonic()
-            if wait > 0:
-                time.sleep(wait)
-            started = time.time()
+        A call holds one of `parallel` slots while it runs. Its quota check counts the calls already started as
+        pending, and it reserves its start time at least min_gap after the previous start. So parallel calls
+        neither overshoot a cap nor start in one burst. A blocked call starts no process and is not counted."""
+        with self._slots:
+            with self._gate:
+                if self.quota is not None:
+                    self.quota.check(self.backend.backend_id, pending=self._inflight)
+                now = time.monotonic()
+                start_at = max(now, self._next_start)
+                self._next_start = start_at + self.min_gap
+                self._inflight += 1
             try:
-                res = self.backend.complete_json(system, payload, model=model, schema_json=schema_json,
-                                                 schema_name=schema_name)
-            except BackendError as e:
-                self._record(model, lines, None, round(time.time() - started, 2), e.code, e.retry_after)
-                raise
+                if start_at > now:
+                    time.sleep(start_at - now)
+                started = time.time()
+                try:
+                    res = self.backend.complete_json(system, payload, model=model, schema_json=schema_json,
+                                                     schema_name=schema_name)
+                except BackendError as e:
+                    self._record(model, lines, None, round(time.time() - started, 2), e.code, e.retry_after)
+                    raise
+                self._record(model, lines, res["usage"], res["seconds"], "ok")
+                return res
             finally:
-                self._last_done = time.monotonic()
-            self._record(model, lines, res["usage"], res["seconds"], "ok")
-            return res
+                with self._gate:
+                    self._inflight -= 1
 
     def _call(self, meta, model, system, body, ids, should_cancel):
         """One CLI call with at most one retry for format problems. Returns (items, fatal_code_or_None).
@@ -165,7 +200,7 @@ class CliTranslator:
                 keys[sid] = key
                 pending.append(sid)
 
-        def proofread(chunk, results, ctx):
+        def proofread(part, chunk, results, ctx):
             cands = []
             for sid in chunk:
                 text = results[sid]["text"]
@@ -176,15 +211,15 @@ class CliTranslator:
                                                               uncertain=sid in uncertain, flags=flags):
                     cands.append(sid)
             counted = sum(1 for sid in chunk if results[sid]["text"] is not None)
-            meta["proofread_skipped"] = meta.get("proofread_skipped", 0) + counted - len(cands)
+            part["proofread_skipped"] = part.get("proofread_skipped", 0) + counted - len(cands)
             if not cands:
                 return None
-            meta["proofread_calls"] = meta.get("proofread_calls", 0) + 1
-            meta["proofread_lines"] = meta.get("proofread_lines", 0) + len(cands)
+            part["proofread_calls"] = part.get("proofread_calls", 0) + 1
+            part["proofread_lines"] = part.get("proofread_lines", 0) + len(cands)
             body = prompts.build_payload(src, tgt, page, cands, context=ctx, glossary=term_dicts, notes=notes,
                                          fixed=fixed, uncertain=uncertain & set(cands),
                                          drafts={sid: results[sid]["text"] for sid in cands})
-            better, fatal = self._call(meta, model, proof_system, body, cands, should_cancel)
+            better, fatal = self._call(part, model, proof_system, body, cands, should_cancel)
             better = better or {}
             for sid in cands:
                 item = better.get(sid) or {}
@@ -200,17 +235,20 @@ class CliTranslator:
                 results[sid] = {"text": text, "reasons": list(dict.fromkeys(reasons))}
             return fatal
 
-        stop = None
-        prev_tail = []
-        for chunk in prompts.chunk_ids(pending, self.chunk_size):
-            if should_cancel():
-                return meta
+        def solve(chunk, prev_tail, halt):
+            """One chunk: one call, one retry for the lines it missed, then the optional review pass.
+
+            Returns (results, part, stop). results is None when the chunk was not answered. Runs in a worker thread
+            when chunks go in parallel, so it writes only to its own part."""
+            part = _new_meta()
+            if halt.is_set() or should_cancel():
+                return None, part, None
             ctx = _bounded_context(context + prev_tail)
             body = prompts.build_payload(src, tgt, page, chunk, context=ctx, glossary=term_dicts, notes=notes,
                                          fixed=fixed, uncertain=uncertain)
-            got, stop = self._call(meta, model, system, body, chunk, should_cancel)
+            got, stop = self._call(part, model, system, body, chunk, should_cancel)
             if stop:
-                break
+                return None, part, stop
             failed = got is None  # a failed call leaves no reply to repair, so its lines get no targeted retry
             got = {} if failed else got
             missing = [sid for sid in chunk if (got.get(sid) or {}).get("text") is None]
@@ -218,7 +256,7 @@ class CliTranslator:
                 body2 = prompts.build_payload(src, tgt, page, missing, context=ctx, glossary=term_dicts,
                                               notes=notes, fixed=fixed, uncertain=uncertain,
                                               retry_reasons={sid: ["missing_or_empty"] for sid in missing})
-                again, stop = self._call(meta, model, system, body2, missing, should_cancel)
+                again, stop = self._call(part, model, system, body2, missing, should_cancel)
                 again = again or {}
                 for sid in missing:
                     if (again.get(sid) or {}).get("text") is not None:
@@ -239,8 +277,18 @@ class CliTranslator:
                 results[sid] = {"text": text, "reasons": list(dict.fromkeys(reasons))}
 
             if review != "off" and not stop and not should_cancel():
-                stop = proofread(chunk, results, ctx) or None
+                stop = proofread(part, chunk, results, ctx) or None
+            return results, part, stop
 
+        halt = threading.Event()  # set on a fatal error: chunks that have not started yet stay unsent
+
+        def emit(chunk, results, part, stop):
+            """Main thread only: writes one chunk's counters, results, cache entries and quality notes."""
+            _merge_meta(meta, part)
+            if stop:
+                halt.set()
+            if results is None:
+                return
             for sid in chunk:
                 r = results[sid]
                 reported.add(sid)
@@ -255,10 +303,33 @@ class CliTranslator:
                     if use_cache:
                         self.cache.put_tr(keys[sid], r["text"])
                     on_result(sid, r["text"], "done")
-            prev_tail = [{"source": text_of[sid], "translation": results[sid]["text"] or "", "confirmed": False}
-                         for sid in chunk[-prompts.CONTEXT_LINES:] if results[sid]["text"]]
-            if stop:
-                break
+
+        chunks = prompts.chunk_ids(pending, self.chunk_size)
+        if self.parallel > 1 and len(chunks) > 1:
+            pool = ThreadPoolExecutor(max_workers=min(self.parallel, len(chunks)),
+                                      thread_name_prefix="balloonlens-chunk")
+            try:
+                owner = {pool.submit(solve, chunk, [], halt): chunk for chunk in chunks}
+                for fut in as_completed(owner):
+                    if should_cancel():
+                        break
+                    results, part, stop = fut.result()
+                    emit(owner[fut], results, part, stop)
+            finally:
+                halt.set()
+                pool.shutdown(wait=False, cancel_futures=True)  # a cancelled page does not wait for calls in flight
+        else:
+            prev_tail = []
+            for chunk in chunks:
+                if should_cancel():
+                    return meta
+                results, part, stop = solve(chunk, prev_tail, halt)
+                emit(chunk, results, part, stop)
+                if results is not None:
+                    prev_tail = [{"source": text_of[sid], "translation": results[sid]["text"] or "", "confirmed": False}
+                                 for sid in chunk[-prompts.CONTEXT_LINES:] if results[sid]["text"]]
+                if stop:
+                    break
 
         if should_cancel():
             return meta
@@ -266,6 +337,4 @@ class CliTranslator:
             if sid not in reported:
                 on_result(sid, None, "failed")
                 reported.add(sid)
-        if stop:
-            meta["fatal"] = stop
         return meta

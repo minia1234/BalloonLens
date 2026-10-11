@@ -605,6 +605,9 @@
       // as context. Never wait inside a submit slot (that can deadlock a long page).
       const index = waiting.findIndex(task => {
         if (!alive(task.entry)) return true;
+        // Subscription pages go out side by side (the helper runs CLI_PARALLEL calls at once), so they do not queue
+        // behind earlier pages. Local pages keep reading order, since each one takes the earlier pages as context.
+        if (subscriptionMode()) return true;
         const target = task.entry.anchor.el;
         for (const img of document.querySelectorAll('img')) {
           if (img === target) break;
@@ -900,6 +903,7 @@
         el = document.createElement("div");
         el._sourceFontRatio=BalloonLensReading.sourceFontSize(base)/snap.width;
         el._imageLayer=e.layer;
+        el._frac=box; // the OCR box as fractions of the layer, to return to after a grown box
         const pct = (n) => `${n * 100}%`;
         Object.assign(el.style, { left: pct(box[0]), top: pct(box[1]), width: pct(box[2]), height: pct(box[3]), minHeight: pct(box[3]) });
         el.dataset.ib = JSON.stringify(toImageFrac(e, box));
@@ -937,7 +941,10 @@
     el.textContent = ""; // text only, never HTML (section 14.1)
     el.style.background = "transparent";
     if (el._cleanup) el._cleanup.hidden = !shown || !!v.hidden;
-    if (!shown) return;
+    if (!shown) {
+      resetBox(el); // a balloon that lost its text goes back to its OCR box
+      return;
+    }
     const t = document.createElement("span");
     t.textContent = v.tgt;
     t.dataset.fullText = v.tgt;
@@ -952,22 +959,49 @@
     fit(el);
   }
 
+  // A balloon sits in its layer as fractions of the image (its OCR box). A grown box is set in pixels instead.
+  const pctOf = (n) => `${n * 100}%`;
+  function setBox(el, x, y, w, h) {
+    Object.assign(el.style, { left: `${x}px`, top: `${y}px`, width: `${w}px`, height: `${h}px`, minHeight: "0px" });
+  }
+  function resetBox(el) {
+    const [x, y, w, h] = el._frac;
+    Object.assign(el.style, { left: pctOf(x), top: pctOf(y), width: pctOf(w), height: pctOf(h), minHeight: pctOf(h) });
+  }
+
+  // A line that does not fit its box grows around it (fitGrowing), so the whole translation shows.
   function fit(el) {
     if (!el.firstChild) return;
-    const ctx = document.createElement('canvas').getContext('2d');
+    const layer = el._imageLayer, LW = layer.clientWidth, LH = layer.clientHeight;
+    if (!LW || !LH) return; // the layer is not laid out (hidden tab); place() measures again when it is
+    const [fx, fy, fw, fh] = el._frac;
+    const x0 = fx * LW, y0 = fy * LH, w0 = fw * LW, h0 = fh * LH;
+    setBox(el, x0, y0, w0, h0);
     const css = getComputedStyle(el), text = el.firstChild;
     const padX = parseFloat(css.paddingLeft) + parseFloat(css.paddingRight);
     const padY = parseFloat(css.paddingTop) + parseFloat(css.paddingBottom);
-    const result = BalloonLensReading.fitText(text.dataset.fullText || text.textContent, Math.max(1, el.clientWidth-padX),
-      Math.max(1, el.clientHeight-padY)*(settings.showSource ? .7 : 1), (s,size) => {
+    const ctx = document.createElement('canvas').getContext('2d');
+    const shrink = settings.showSource ? .7 : 1; // the source line takes the rest of the height
+    const baseW = Math.max(1, w0 - padX), baseH = Math.max(1, h0 - padY) * shrink;
+    const fitted = BalloonLensReading.fitGrowing(text.dataset.fullText || text.textContent, baseW, baseH,
+      Math.max(1, LW - padX), Math.max(1, LH - padY) * shrink, (s, size) => {
         ctx.font = `${css.fontWeight} ${size}px ${css.fontFamily}`;
         return ctx.measureText(s).width;
-      }, settings.fontScale, el._sourceFontRatio*el._imageLayer.clientWidth);
-    text.textContent = result.lines.join('\n');
+      }, settings.fontScale, el._sourceFontRatio * LW);
+    const grown = fitted.width > baseW + .5 || fitted.height > baseH + .5;
+    if (grown) {
+      const boxW = fitted.width + padX, boxH = fitted.height / shrink + padY;
+      const x = Math.max(0, Math.min(LW - boxW, x0 + w0 / 2 - boxW / 2));
+      const y = Math.max(0, Math.min(LH - boxH, y0 + h0 / 2 - boxH / 2));
+      setBox(el, x, y, boxW, boxH);
+    } else resetBox(el);
+    text.textContent = fitted.lines.join('\n');
     text.style.whiteSpace = 'pre';
-    el.style.fontSize = `${result.size}px`;
-    el.classList.toggle('overflow', result.overflow);
-    el.title = result.overflow ? '대사가 길어요 · 눌러서 전체 보기' : '눌러서 원문 확인·수정';
+    el.style.fontSize = `${fitted.size}px`;
+    // A grown box leaves the cleaned area of the original text, so it gets its own light background.
+    el.style.background = el._cleanup && !grown ? 'transparent' : `rgba(255,255,255,${settings.bgOpacity})`;
+    el.classList.toggle('overflow', fitted.overflow);
+    el.title = fitted.overflow ? '대사가 길어요 · 눌러서 전체 보기' : '눌러서 원문 확인·수정';
   }
 
   function setOverride(e, sid, patch) {

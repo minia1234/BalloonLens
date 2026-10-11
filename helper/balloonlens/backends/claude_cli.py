@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 from .base import (BackendError, BackendStatus, ProcessRunner, api_key_vars_present, classify_failure, clean_env,
-                   digest, normalize_usage, parse_json_loose)
+                   digest, normalize_usage, parse_json_loose, write_once)
 from .prompts import FIXED_TASK, PAGE_SCHEMA_JSON
 
 MIN_VERSION = (2, 1, 268)  # `auth status` reports configDirectory from this version on
@@ -66,9 +66,7 @@ class ClaudeCodeBackend:
 
     def _system_file(self, system: str) -> Path:
         path = self.runtime_dir / f"system-claude-{digest(system)[:16]}.txt"
-        if not path.exists():
-            path.write_text(system, encoding="utf-8")
-        return path
+        return write_once(path, system)  # parallel calls read this file while another call may be creating it
 
     def cancel(self):
         self.runner.cancel()

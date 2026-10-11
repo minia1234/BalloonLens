@@ -26,6 +26,8 @@ RUNTIME_DIR = DATA_DIR / "runtime"
 CLAUDE_EFFORT = os.environ.get("BALLOONLENS_CLAUDE_EFFORT", "low")
 CODEX_REASONING = os.environ.get("BALLOONLENS_CODEX_REASONING", "low")
 CLI_TIMEOUT_S = float(os.environ.get("BALLOONLENS_CLI_TIMEOUT", "150"))
+# How many subscription CLI calls run at once (images and chunks of one page share this). 1 = one at a time.
+CLI_PARALLEL = max(1, min(4, int(os.environ.get("BALLOONLENS_CLI_PARALLEL", "3"))))
 
 
 def ollama_base_url(value: str | None) -> str:

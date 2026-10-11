@@ -6,6 +6,7 @@ import time
 import uuid
 import base64
 import io
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from . import config, memory
@@ -70,6 +71,11 @@ class JobManager:
         self._lock = threading.Condition()
         self._seq = itertools.count()
         self._thread = None
+        # Subscription jobs run side by side (their CLI calls are the slow part). OCR is one-at-a-time on the GPU.
+        self._ocr_lock = threading.Lock()
+        self._cli_limit = config.CLI_PARALLEL
+        self._cli_active = 0
+        self._cli_pool = None
 
     # ----- API side -----
     def submit(self, image: bytes, *, src, tgt, model, reading, priority, session, scope, options=None) -> Job:
@@ -130,22 +136,42 @@ class JobManager:
 
     # ----- worker side -----
     def start(self):
+        self._cli_pool = ThreadPoolExecutor(max_workers=self._cli_limit, thread_name_prefix="balloonlens-cli")
         self._thread = threading.Thread(target=self._loop, name="balloonlens-worker", daemon=True)
         self._thread.start()
+
+    def _is_cli(self, job: Job) -> bool:
+        return self.router is not None and self.router.is_subscription(job.model)
 
     def _next(self) -> Job:
         with self._lock:
             while True:
-                queued = [j for j in self._jobs.values() if j.status == "queued"]
+                # A subscription job waits in the queue while every CLI slot is busy; local jobs never wait for it.
+                queued = [j for j in self._jobs.values()
+                          if j.status == "queued" and (not self._is_cli(j) or self._cli_active < self._cli_limit)]
                 if queued:
                     job = min(queued, key=lambda j: (j.priority, j.seq))
                     job.status = "ocr"
+                    if self._is_cli(job):
+                        self._cli_active += 1
                     return job
                 self._lock.wait()
 
     def _loop(self):
         while True:
-            self.process(self._next())
+            job = self._next()
+            if self._is_cli(job):
+                self._cli_pool.submit(self._run_cli_job, job)
+            else:
+                self.process(job)
+
+    def _run_cli_job(self, job: Job):
+        try:
+            self.process(job)
+        finally:
+            with self._lock:
+                self._cli_active -= 1
+                self._lock.notify_all()
 
     def process(self, job: Job):
         t_start = time.time()
@@ -167,39 +193,41 @@ class JobManager:
                 self._finish(job, "failed", blocked)
             return
         image_hash = sha256(job.image)
-        img = self.decode(job.image)
-        job.width, job.height, job.image_hash = img.width, img.height, image_hash
-        key = ocr_key(image_hash, job.src, f"{config.OCR_VERSION}:{job.reading}")
-        segments = self.cache.get_ocr(key)
-        if segments is None:
-            segments, t = self.ocr.run(img, job.src, job.reading)
-            self.cache.put_ocr(key, segments)
-            job.timings.update(t)
-        else:
-            job.timings["ocr_cache"] = True
+        # Reading the image is the GPU step: only one job reads at a time, while others wait on their CLI calls.
+        with self._ocr_lock:
+            img = self.decode(job.image)
+            job.width, job.height, job.image_hash = img.width, img.height, image_hash
+            key = ocr_key(image_hash, job.src, f"{config.OCR_VERSION}:{job.reading}")
+            segments = self.cache.get_ocr(key)
+            if segments is None:
+                segments, t = self.ocr.run(img, job.src, job.reading)
+                self.cache.put_ocr(key, segments)
+                job.timings.update(t)
+            else:
+                job.timings["ocr_cache"] = True
 
-        def read_region(bbox):
-            region_key = ocr_key(image_hash, job.src, f"{config.OCR_VERSION}:region:{bbox_key(bbox)}")
-            hit = self.cache.get_ocr(region_key)
-            if hit is None:
-                text, conf, uncertain = self.ocr.read_region(img, bbox, job.src)
-                hit = {"text": text, "conf": conf, "uncertain": uncertain}
-                self.cache.put_ocr(region_key, hit)
-            return hit["text"], hit["conf"], hit["uncertain"]
+            def read_region(bbox):
+                region_key = ocr_key(image_hash, job.src, f"{config.OCR_VERSION}:region:{bbox_key(bbox)}")
+                hit = self.cache.get_ocr(region_key)
+                if hit is None:
+                    text, conf, uncertain = self.ocr.read_region(img, bbox, job.src)
+                    hit = {"text": text, "conf": conf, "uncertain": uncertain}
+                    self.cache.put_ocr(region_key, hit)
+                return hit["text"], hit["conf"], hit["uncertain"]
 
-        saved_layout = self.cache.get_layout(image_hash, job.src)
-        segments = layouts.apply_layout(segments, saved_layout, read_region, job.reading)
-        job.layout = saved_layout or layouts.empty()
-        t_present = time.time()
-        segments = layouts.apply_frames(prepare_presentation(img, segments))
-        job.timings['presentation_ms'] = round((time.time()-t_present)*1000)
-        vision_image = None
-        if job.options.get('vision') and job.model.startswith('qwen3.5'):
-            img.thumbnail((1280, 1920))
-            buf = io.BytesIO()
-            img.save(buf, 'JPEG', quality=85)
-            vision_image = base64.b64encode(buf.getvalue()).decode('ascii')
-        del img
+            saved_layout = self.cache.get_layout(image_hash, job.src)
+            segments = layouts.apply_layout(segments, saved_layout, read_region, job.reading)
+            job.layout = saved_layout or layouts.empty()
+            t_present = time.time()
+            segments = layouts.apply_frames(prepare_presentation(img, segments))
+            job.timings['presentation_ms'] = round((time.time()-t_present)*1000)
+            vision_image = None
+            if job.options.get('vision') and job.model.startswith('qwen3.5'):
+                img.thumbnail((1280, 1920))
+                buf = io.BytesIO()
+                img.save(buf, 'JPEG', quality=85)
+                vision_image = base64.b64encode(buf.getvalue()).decode('ascii')
+            del img
 
         # The reader's own fixes win over OCR and are never overwritten by auto translation (section 3.4).
         edits = self.cache.get_edits(image_hash, job.src, job.tgt)

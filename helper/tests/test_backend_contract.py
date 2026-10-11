@@ -55,11 +55,12 @@ def test_two_backends_never_share_cached_lines(tmp_path):
     assert again["cache_hits"] == 1 and claude.calls == 1
 
 
-def test_a_later_chunk_carries_the_last_two_lines_as_context(tmp_path):
+def test_one_call_at_a_time_a_later_chunk_carries_the_last_two_lines_as_context(tmp_path):
+    # With parallel chunks (the default) the second chunk does not wait for the first, so it gets no such context.
     backend = Replying("claude", "claude-cli")
     digit_free = [(i + 1, "台詞" + "あ" * (i % 5 + 1)) for i in range(26)]  # 24 lines, then 2 more
-    CliTranslator(backend, Cache(tmp_path / "c.db")).translate_page(digit_free, "ja", "ko", "claude-haiku-5-5",
-                                                                    "scope", noop)
+    CliTranslator(backend, Cache(tmp_path / "c.db"), parallel=1).translate_page(
+        digit_free, "ja", "ko", "claude-haiku-5-5", "scope", noop)
     first, second = (json.loads(p) for p in backend.payloads)
     assert first["context"] == []
     assert [item["source"] for item in second["context"]] == [digit_free[22][1], digit_free[23][1]]
