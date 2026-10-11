@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="ui.css" />
+</head>
+<body class="popup">
+  <header>
+    <img src="icons/32.png" alt="" />
+    <strong>말풍선 렌즈</strong>
+    <span id="conn" class="badge">확인 중</span>
+  </header>
+
+  <div id="notice" class="card notice" hidden>
+    <div class="notice-body">
+      <b id="noticeTitle"></b>
+      <span id="noticeText"></span>
+      <div id="noticeBar" class="bar" hidden><i></i></div>
+    </div>
+    <button id="noticeBtn" class="btn primary" hidden></button>
+  </div>
+
+  <div id="subCard" class="card sub-card" hidden>
+    <div class="row"><b id="subTitle"></b><span id="subState" class="badge"></span></div>
+    <small id="subUsage" class="muted"></small>
+    <div id="consentBox" hidden>
+      <ul id="consentList" class="consent-list"></ul>
+      <button id="consentAccept" class="btn primary">동의하고 쓰기</button>
+    </div>
+    <div id="pausedBox" class="paused-box" hidden>
+      <p id="pausedText" class="muted"></p>
+      <div class="row2"><button id="pausedLocal" class="btn">로컬로 계속</button><button id="pausedRetry" class="btn">다시 시도</button></div>
+    </div>
+  </div>
+
+  <div id="progress" class="card progress-card" hidden>
+    <div class="row"><b id="progressTitle">번역 중</b><span id="progressText" class="muted"></span></div>
+    <div class="bar"><i id="progressBar"></i></div>
+  </div>
+
+  <button id="toggle" class="btn big primary">번역 켜기</button>
+  <div class="row" style="margin:10px 0;justify-content:space-between" aria-label="글자 크기">
+    <span>글자 크기</span><button id="fontDown" class="btn" aria-label="글자 작게">A−</button>
+    <button id="fontReset" class="btn" title="기본 크기로">100%</button><button id="fontUp" class="btn" aria-label="글자 크게">A+</button>
+  </div>
+  <div class="row2">
+    <button id="region" class="btn">
+      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V5a1 1 0 0 1 1-1h4M15 4h4a1 1 0 0 1 1 1v4M20 15v4a1 1 0 0 1-1 1h-4M9 20H5a1 1 0 0 1-1-1v-4"/></svg>
+      영역 번역
+    </button>
+    <button id="peek" class="btn" aria-pressed="false">
+      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+      원문 보기
+    </button>
+  </div>
+
+  <div class="row2" style="margin-top:8px">
+    <button id="retryFailed" class="btn" disabled>실패한 부분 재시도</button>
+    <button id="nextIssue" class="btn" disabled>확인할 대사 보기</button>
+  </div>
+  <div class="row2" style="margin-top:8px">
+    <button id="scriptList" class="btn" title="페이지의 모든 대사를 글로 보기 · Alt+Shift+L">대사 목록</button>
+    <button id="editRegions" class="btn" disabled title="화면에 보이는 이미지의 글자 영역·번역 칸 고치기">영역 편집</button>
+  </div>
+  <p id="quickStatus" class="muted" role="status" aria-live="polite"></p>
+
+  <div class="group">
+    <p class="field-label">언어</p>
+    <div class="lang">
+      <select id="src" aria-label="원문 언어">
+        <option value="ja">일본어</option>
+        <option value="en">영어</option>
+      </select>
+      <span class="arrow" aria-hidden="true">→</span>
+      <select id="tgt" aria-label="번역할 언어">
+        <option value="ko">한국어</option>
+        <option value="en">영어 (시험 중)</option>
+        <option value="ja">일본어 (시험 중)</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="group">
+    <p class="field-label">번역 방식</p>
+    <div class="seg-ctl" role="radiogroup" aria-label="번역 방식" data-field="model">
+      <button role="radio" data-value="claude-haiku-5-5">Claude 구독<small>Haiku · 구독 사용량</small></button>
+      <button role="radio" data-value="gpt-6-luna">Codex 구독<small>luna · 구독 사용량</small></button>
+      <button role="radio" data-value="qwen3.5:9b">로컬<small>Qwen3.5 · 이 PC</small></button>
+    </div>
+  </div>
+
+  <div class="group work-group">
+    <button id="workSettings" class="btn">이 작품의 말투·용어 설정</button>
+    <small id="workState" class="muted"></small>
+  </div>
+
+  <div class="group">
+    <p class="field-label">읽는 방향</p>
+    <div class="seg-ctl" role="radiogroup" aria-label="읽는 방향" data-field="reading">
+      <button role="radio" data-value="rtl">만화 ←</button>
+      <button role="radio" data-value="ltr">가로 →</button>
+      <button role="radio" data-value="ttb">웹툰 ↓</button>
+    </div>
+  </div>
+
+  <label class="card switch-row">
+    <span><b>이 사이트에서 자동으로 켜기</b><small id="siteHost" class="muted"></small></span>
+    <input type="checkbox" id="autoSite" class="switch" />
+  </label>
+
+  <footer>
+    <a href="#" id="openOptions">설정 · 시작하기</a>
+    <a href="#" id="openShortcuts">단축키</a>
+  </footer>
+  <script src="reading.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

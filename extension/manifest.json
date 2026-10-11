@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "말풍선 렌즈 · BalloonLens",
+  "short_name": "말풍선 렌즈",
+  "description": "만화 이미지 속 대사를 읽어 번역하고 원래 자리에 보여줘요. 이미지는 이 PC를 떠나지 않아요.",
+  "version": "0.5.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvQUlbkSp6Uzq1K+28jsb2jHLd4kHvGAyXIjIBBym93UYrzzEUkVbqJUfvH8mVZ0Y+sbBc5jx8EpCH122jQqLS7yVoo5K87jdeakaFCMpbLgf+mg2+fXPVLTtyKdh3Ro77Ucl2k460ABauzWYGG4Dv2pyGauY6lcsnaAwx/znegh2yYCqH6I9E4zIks1+kPiMZ+ul+zmqk9dJIo9D7O/YdlfFDlBI02BO5/h1pWD4cv4DS8WuuSigJLFYIC6kDolDERYOZQunBbV7/ZzYAE9GpEf7gDyrvcUrQKwQJeOfU+ehQuKL25vHOvBtDSTZNNIq8QYDQ3oTQNfGI84CVkr0zwIDAQAB",
+  "minimum_chrome_version": "116",
+  "icons": { "16": "icons/16.png", "32": "icons/32.png", "48": "icons/48.png", "128": "icons/128.png" },
+  "permissions": ["storage", "activeTab", "scripting", "nativeMessaging"],
+  "host_permissions": ["http://127.0.0.1:8787/*"],
+  "optional_host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "sw.js" },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "말풍선 렌즈",
+    "default_icon": { "16": "icons/16.png", "32": "icons/32.png" }
+  },
+  "options_page": "options.html",
+  "commands": {
+    "toggle-translate": { "suggested_key": { "default": "Alt+Shift+T" }, "description": "현재 탭 번역 켜기/끄기" },
+    "region-translate": { "suggested_key": { "default": "Alt+Shift+R" }, "description": "영역 번역" },
+    "peek-original": { "suggested_key": { "default": "Alt+Shift+O" }, "description": "원문 보기 켜기/끄기" },
+    "toggle-script": { "suggested_key": { "default": "Alt+Shift+L" }, "description": "대사 목록 열기/닫기" }
+  }
+}

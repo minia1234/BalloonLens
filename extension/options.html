@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>말풍선 렌즈 · 설정</title>
+  <link rel="stylesheet" href="ui.css" />
+</head>
+<body class="options">
+  <div class="hero">
+    <img src="icons/128.png" alt="" />
+    <div>
+      <h1>말풍선 렌즈</h1>
+      <p>만화 속 대사를 번역해서 원래 말풍선 자리에 보여줘요. 이미지는 이 PC를 떠나지 않아요.</p>
+    </div>
+  </div>
+
+  <section id="welcome">
+    <div class="section-head"><h2>시작하기</h2><span id="setupSummary" class="badge">확인 중</span></div>
+    <ol class="steps">
+      <li class="step card" id="step-native" data-n="1">
+        <span class="icon">1</span>
+        <div class="body">
+          <h3>로컬 도우미 설치</h3>
+          <p class="desc">번역은 이 PC의 도우미 프로그램이 해요. 한 번만 설치하면 크롬에서 알아서 켜요.</p>
+          <div class="detail" hidden>
+            <p>BalloonLens 폴더의 <code>tools\install_windows.cmd</code>를 더블클릭하세요. 설치가 끝나면 이 페이지로 돌아오면 돼요.</p>
+          </div>
+        </div>
+        <div class="act"></div>
+      </li>
+      <li class="step card" id="step-helper" data-n="2">
+        <span class="icon">2</span>
+        <div class="body"><h3>도우미 실행</h3><p class="desc">번역을 켜면 자동으로 켜져요.</p></div>
+        <div class="act"></div>
+      </li>
+      <li class="step card" id="step-models" data-n="3">
+        <span class="icon">3</span>
+        <div class="body">
+          <h3>번역 방식</h3><p class="desc">Claude나 Codex 구독에 로그인해서 쓰거나(권장), 이 PC의 로컬 모델을 Ollama에서 받아 쓸 수 있어요.</p>
+          <div id="models" class="models"></div>
+          <p class="muted">같은 계정으로 Claude Code나 Codex를 직접 쓸 때와 한도를 나눠 써요. 번역이 먼저 한도를 쓸 수 있어요. 추가 사용량(extra usage)과 추가 크레딧 과금은 꺼져 있어야 해요. 켜져 있으면 한도가 닿은 뒤에도 요금이 나갈 수 있어요. 구독 번역은 화면에 보이는 이미지와 바로 아래 이미지 한 장만 미리 번역해요.</p>
+        </div>
+        <div class="act"></div>
+      </li>
+      <li class="step card" id="step-permission" data-n="4">
+        <span class="icon">4</span>
+        <div class="body"><h3>사이트 이미지 읽기 허용</h3><p class="desc">만화 이미지를 읽으려면 필요해요. 이미지는 이 PC 밖으로 나가지 않아요.</p></div>
+        <div class="act"></div>
+      </li>
+      <li class="step card" id="step-demo" data-n="5">
+        <span class="icon">5</span>
+        <div class="body">
+          <h3>샘플로 확인</h3><p class="desc">예제 만화 한 장을 실제로 번역해 봐요.</p>
+          <div id="demo" class="demo" hidden>
+            <div class="demo-stage"><img alt="샘플 만화" /></div>
+            <p id="demoStatus" class="muted"></p>
+          </div>
+        </div>
+        <div class="act"></div>
+      </li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>작품별 말투·용어·기억</h2>
+    <div class="card controls" style="padding:16px">
+      <p class="muted">문맥 모드(Qwen)에서 적용돼요. 작품 주소 아래의 페이지들에 같은 규칙을 사용합니다.</p>
+      <label class="field">저장된 작품<select id="workList"><option value="">새 작품</option></select></label>
+      <label class="field">작품 주소<input id="workUrl" type="url" placeholder="https://사이트/manga/작품명" maxlength="200" /></label>
+      <label class="field">말투 빠른 설정<select id="speechPreset"><option value="custom">직접 입력</option><option value="natural">원문에 맞게 자연스럽게</option><option value="casual">편한 반말</option><option value="polite">부드러운 존댓말</option></select></label>
+      <label class="field">말투·호칭 지침<textarea id="workInstructions" rows="3" maxlength="2000" placeholder="예: 유키와 하루는 서로 반말. 선생님에게는 존댓말."></textarea></label>
+      <label class="field">인명·용어집<textarea id="workGlossary" rows="4" maxlength="4000" placeholder="예: 田中 = 다나카&#10;先輩 = 선배"></textarea></label>
+      <div class="memory">
+        <p class="field-label">작품 기억 <span id="memoryStats" class="muted"></span></p>
+        <p class="muted">등록한 작품 주소 아래 페이지를 번역하면, 원문과 번역(직접 고친 표현 포함)을 이 PC에 기억해서 다음 페이지 번역에 참고해요. 사이트가 페이지에 번호를 붙이면 뒤 페이지 내용은 앞 페이지에 쓰지 않아요. 아래 칸에는 직접 확인한 내용만 적어 주세요.</p>
+        <label class="field">작품 제목<input id="workTitle" type="text" maxlength="120" /></label>
+        <label class="field">줄거리 (확인한 내용)<textarea id="workSummary" rows="2" maxlength="400"></textarea></label>
+        <label class="field">인물<textarea id="workCharacters" rows="3" maxlength="800" placeholder="예: 田中 = 다나카 · 반말 · 유키의 선배&#10;ユキ = 유키 · 존댓말"></textarea></label>
+        <div class="row"><button id="suggestWork" class="btn">기억에서 제안 받기</button><button id="clearMemory" class="btn">기억한 페이지 비우기</button></div>
+        <div id="suggestions" class="suggest" hidden></div>
+      </div>
+      <div class="row"><button id="saveWork" class="btn primary">저장</button><button id="deleteWork" class="btn">삭제</button><span id="workStatus" role="status"></span></div>
+      <label class="switch-row"><span>장면도 참고하기<small class="muted">로컬 Qwen3.5를 고르면 원본 이미지를 이 PC의 모델에 전달해요. 구독 번역은 이미지를 보내지 않아요.</small></span><input id="vision" type="checkbox" /></label>
+      <label class="field"><span>대사 검수</span><select id="reviewMode"><option value="">자동</option><option value="off">끔</option><option value="selective">필요한 대사만 다시 보기</option><option value="all">모든 대사 다시 보기 (느림)</option></select><small class="muted">로컬 모델은 필요한 대사만 한 번 더 보고, 구독 번역은 기본으로 꺼져 있어요.</small></label>
+    </div>
+  </section>
+
+  <section>
+    <h2>번역문 모양</h2>
+    <div class="card preview-grid">
+      <div class="controls">
+        <label class="field"><span>글자 크기 <output id="fontScaleVal"></output></span><input id="fontScale" type="range" min="0.7" max="1.5" step="0.05" /></label>
+        <label class="field"><span>배경 불투명도 <output id="bgOpacityVal"></output></span><input id="bgOpacity" type="range" min="0.5" max="1" step="0.02" /></label>
+        <label class="switch-row"><span>원문 같이 보기</span><input id="showSource" type="checkbox" class="switch" /></label>
+      </div>
+      <div class="balloon-preview" aria-hidden="true">
+        <div class="pv-balloon">
+          <div class="pv-text">まだ終わってない</div>
+          <div id="pvSeg" class="pv-seg"><span>아직 안 끝났어.</span><span id="pvSrc" class="src">まだ終わってない</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>자동으로 켜는 사이트</h2>
+    <div class="card">
+      <ul id="sites" class="list"></ul>
+      <p id="sitesEmpty" class="muted">팝업에서 “이 사이트에서 자동으로 켜기”를 켜면 여기에 추가돼요.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>단축키</h2>
+    <div class="card">
+      <ul id="shortcuts" class="list"></ul>
+      <button class="btn" id="editShortcuts">단축키 바꾸기</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>설정 백업</h2>
+    <div class="card">
+      <p class="muted">번역 설정, 자동 사이트, 작품별 말투·용어와 작품 정보(제목·줄거리·인물)를 파일로 저장하거나 불러와요. 기억한 페이지, 번역 캐시, 연결 토큰은 넣지 않아요.</p>
+      <div class="row">
+        <button class="btn" id="exportSettings">파일로 저장</button>
+        <button class="btn" id="importSettings">파일에서 불러오기</button>
+        <input id="importFile" type="file" accept="application/json,.json" hidden />
+        <span id="backupStatus" class="muted" role="status"></span>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>문제 해결</h2>
+    <div class="card trouble">
+      <div class="row"><button class="btn" id="repair">연결 다시 맺기</button><span id="repairResult" class="muted"></span></div>
+      <p class="muted">도우미 기록: <code>%LOCALAPPDATA%\BalloonLens\helper.log</code></p>
+      <p class="muted">로컬 번역은 이 PC의 도우미와 Ollama에서만 실행돼요. 구독 번역은 대사 글자만 Claude 또는 Codex 서버로 보내고, 이미지는 보내지 않아요.</p>
+      <p class="muted">구독 로그인은 개인 PC에서만 쓰세요. 이 확장을 다른 사람에게 나누거나 배포하면 안 돼요.</p>
+    </div>
+  </section>
+  <script src="reading.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>

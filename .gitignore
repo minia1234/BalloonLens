@@ -1,0 +1,39 @@
+﻿# Python and build output
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+build/
+dist/
+*.spec
+
+# Node
+node_modules/
+
+# Local data, caches and runtime: never publish
+bench_out/
+release/
+helper/runtime/
+helper/data/
+*.sqlite3
+*.db
+metrics.jsonl
+helper.log
+*.log
+token.txt
+auth.json
+.credentials.json
+claude-config/
+codex-sandbox/
+
+# Personal material (real manga pages are not part of the project)
+samples/real/
+
+# Editor, assistant and OS files
+.claude/
+.vscode/
+.idea/
+.playwright/
+Thumbs.db
+.DS_Store
+desktop.ini
