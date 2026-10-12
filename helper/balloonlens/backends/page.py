@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from .. import config
 from ..cache import tr_key
 from . import prompts, validate
-from .base import BackendError, digest
+from .base import BackendError, CallCancelled, cancel_scope, digest
 
 MAX_CONTEXT_ITEMS = 32
 MAX_CONTEXT_CHARS = 3000
@@ -101,15 +101,22 @@ class CliTranslator:
                               seconds=seconds, outcome=outcome, retry_after=retry_after)
 
     def call_json(self, system, payload, *, model, schema_json=prompts.PAGE_SCHEMA_JSON, schema_name="page",
-                  lines=0):
+                  lines=0, should_cancel=None):
         """One guarded CLI call: quota check, start spacing, the call, then the usage record. Translation and
         suggestions use it.
 
         A call holds one of `parallel` slots while it runs. Its quota check counts the calls already started as
         pending, and it reserves its start time at least min_gap after the previous start. So parallel calls
-        neither overshoot a cap nor start in one burst. A blocked call starts no process and is not counted."""
+        neither overshoot a cap nor start in one burst. A blocked call starts no process and is not counted.
+
+        should_cancel is checked before the quota check and again after the start-gap wait, so a page cancelled while
+        it waited never starts a process. A process that was running when its page was cancelled is stopped by the
+        runner and recorded as "cancelled" (it may have used quota)."""
+        cancelled = should_cancel or (lambda: False)
         with self._slots:
             with self._gate:
+                if cancelled():
+                    raise CallCancelled()
                 if self.quota is not None:
                     self.quota.check(self.backend.backend_id, pending=self._inflight)
                 now = time.monotonic()
@@ -119,11 +126,17 @@ class CliTranslator:
             try:
                 if start_at > now:
                     time.sleep(start_at - now)
+                if cancelled():  # the page was cancelled while it waited for the start gap
+                    raise CallCancelled()
                 started = time.time()
                 try:
-                    res = self.backend.complete_json(system, payload, model=model, schema_json=schema_json,
-                                                     schema_name=schema_name)
+                    with cancel_scope(should_cancel):
+                        res = self.backend.complete_json(system, payload, model=model, schema_json=schema_json,
+                                                         schema_name=schema_name)
                 except BackendError as e:
+                    if cancelled():
+                        self._record(model, lines, None, round(time.time() - started, 2), "cancelled")
+                        raise CallCancelled() from e
                     self._record(model, lines, None, round(time.time() - started, 2), e.code, e.retry_after)
                     raise
                 self._record(model, lines, res["usage"], res["seconds"], "ok")
@@ -141,8 +154,11 @@ class CliTranslator:
         while True:
             attempts += 1
             try:
-                res = self.call_json(system, prompts.encode_payload(body), model=model, lines=len(ids))
+                res = self.call_json(system, prompts.encode_payload(body), model=model, lines=len(ids),
+                                     should_cancel=should_cancel)
             except BackendError as e:
+                if e.code == "cancelled":  # not a failure: the page no longer wants the answer
+                    return None, None
                 meta["error"] = e.code
                 meta["network_errors"].append(e.code)
                 if e.fatal:

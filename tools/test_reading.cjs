@@ -74,6 +74,17 @@ test('growth never passes the image size, and a line that still does not fit is 
   assert.ok(r.width <= 70 && r.height <= 50);
   assert.ok(r.overflow);
 });
+test('growth stops at the room that is free, so it never covers a neighbouring balloon', () => {
+  const text = '아직 이야기가 끝나지 않았어요. 조금만 더 기다려 주세요.';
+  // A neighbour leaves room for at most a 80x60 box: no grown box may be bigger than that.
+  const r = fitGrowing(text, 60, 45, 1000, 1000, malgun, 1, 26, (w, h) => w <= 80 && h <= 60);
+  assert.ok(r.width <= 80 && r.height <= 60);
+  // No free room at all: the line stays in its own box, cut with the overflow mark, rather than covering anything.
+  const none = fitGrowing(text, 60, 45, 1000, 1000, malgun, 1, 26, () => false);
+  assert.equal(none.width, 60);
+  assert.equal(none.height, 45);
+  assert.equal(none.overflow, true);
+});
 test('a line that already fits at a readable size keeps its box', () => {
   const r = fitGrowing('어디로 가는 거야?', 150, 110, 400, 400, measure, 1);
   assert.equal(r.width, 150);

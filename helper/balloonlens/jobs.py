@@ -11,11 +11,19 @@ from dataclasses import dataclass, field
 
 from . import config, memory
 from . import layout as layouts
+from .backends.base import BackendError
 from .cache import bbox_key, ocr_key, sha256
 from .presentation import prepare_presentation
 
 FINISHED = {"done", "partial", "failed", "cancelled"}
 KEEP_FINISHED_S = 600
+
+
+def error_code(e: Exception) -> str:
+    """What a failed job may show and log: a code or an exception name, never its message. A message can carry
+    dialogue (CLI output, model text), and the job error goes to the reader's panel and to metrics.jsonl."""
+    code = e.code if isinstance(e, BackendError) else None
+    return str(code)[:40] if code else type(e).__name__
 
 
 class QueueFull(RuntimeError):
@@ -180,7 +188,7 @@ class JobManager:
             self._run(job, t_start)
         except Exception as e:  # keep the worker alive; surface the reason
             with self._lock:
-                self._finish(job, "failed", f"{type(e).__name__}: {e}"[:300])
+                self._finish(job, "failed", error_code(e))
         job.timings["total_ms"] = round((time.time() - job.created) * 1000)
         self._write_metrics(job)
 

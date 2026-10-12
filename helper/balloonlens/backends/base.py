@@ -13,6 +13,7 @@ import subprocess
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -92,6 +93,29 @@ class BackendError(RuntimeError):
         return self.code in RETRYABLE_CODES
 
 
+class CallCancelled(BackendError):
+    """The page that asked for this call was cancelled. Raised before a process starts, or when its process was stopped."""
+
+    def __init__(self):
+        super().__init__("cancelled")
+
+
+# The cancel check of the call running on this thread. call_json sets it around the backend call, so a process the
+# call starts can be stopped when its own page is cancelled, without passing the check through every backend.
+_scope = threading.local()
+CANCEL_POLL_S = 0.2
+
+
+@contextmanager
+def cancel_scope(should_cancel):
+    previous = getattr(_scope, "should_cancel", None)
+    _scope.should_cancel = should_cancel
+    try:
+        yield
+    finally:
+        _scope.should_cancel = previous
+
+
 @dataclass
 class BackendStatus:
     backend: str
@@ -130,6 +154,14 @@ def kill_tree(proc) -> None:
         pass
 
 
+def _stop_when_cancelled(proc, should_cancel, finished):
+    """Watches one child: when its page is cancelled, its process tree is stopped. Ends when the child has finished."""
+    while not finished.wait(CANCEL_POLL_S):
+        if should_cancel():
+            kill_tree(proc)
+            return
+
+
 class ProcessRunner:
     """One CLI call: stdin in, stdout/stderr out, a hard timeout, and a cancel handle."""
 
@@ -145,6 +177,11 @@ class ProcessRunner:
                            cwd=str(cwd), env=dict(env), shell=False, **_NO_WINDOW)
         with self._lock:
             self._active.add(proc)
+        should_cancel = getattr(_scope, "should_cancel", None)
+        finished = threading.Event()
+        if should_cancel is not None:
+            threading.Thread(target=_stop_when_cancelled, args=(proc, should_cancel, finished),
+                             name="cli-cancel-watch", daemon=True).start()
         timed_out = False
         try:
             out, err = proc.communicate(input=stdin, timeout=timeout)
@@ -153,6 +190,7 @@ class ProcessRunner:
             kill_tree(proc)
             out, err = proc.communicate()
         finally:
+            finished.set()
             with self._lock:
                 self._active.discard(proc)
         return ProcResult(proc.returncode, out or b"", err or b"", round(time.monotonic() - started, 2), timed_out)

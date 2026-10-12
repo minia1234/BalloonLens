@@ -906,6 +906,7 @@
         el._sourceFontRatio=BalloonLensReading.sourceFontSize(base)/snap.width;
         el._imageLayer=e.layer;
         el._frac=box; // the OCR box as fractions of the layer, to return to after a grown box
+        el._entry=e; // the image's entry: its other balloons are the ones a grown box must not cover
         const pct = (n) => `${n * 100}%`;
         Object.assign(el.style, { left: pct(box[0]), top: pct(box[1]), width: pct(box[2]), height: pct(box[3]), minHeight: pct(box[3]) });
         el.dataset.ib = JSON.stringify(toImageFrac(e, box));
@@ -985,17 +986,29 @@
     const ctx = document.createElement('canvas').getContext('2d');
     const shrink = settings.showSource ? .7 : 1; // the source line takes the rest of the height
     const baseW = Math.max(1, w0 - padX), baseH = Math.max(1, h0 - padY) * shrink;
+    // A box of content size (cw, ch) centred on the OCR box, kept inside the image.
+    const place = (cw, ch) => {
+      const bw = cw + padX, bh = ch / shrink + padY;
+      const x = Math.max(0, Math.min(LW - bw, x0 + w0 / 2 - bw / 2));
+      const y = Math.max(0, Math.min(LH - bh, y0 + h0 / 2 - bh / 2));
+      return { x, y, w: bw, h: bh };
+    };
+    const neighbours = [...(el._entry?.segs.values() || [])].filter(s => s !== el)
+      .map(s => ({ x: s.offsetLeft, y: s.offsetTop, w: s.offsetWidth, h: s.offsetHeight }));
+    const free = (cw, ch) => {
+      const box = place(cw, ch);
+      return !neighbours.some(o => box.x < o.x + o.w - 1 && o.x < box.x + box.w - 1 &&
+        box.y < o.y + o.h - 1 && o.y < box.y + box.h - 1);
+    };
     const fitted = BalloonLensReading.fitGrowing(text.dataset.fullText || text.textContent, baseW, baseH,
       Math.max(1, LW - padX), Math.max(1, LH - padY) * shrink, (s, size) => {
         ctx.font = `${css.fontWeight} ${size}px ${css.fontFamily}`;
         return ctx.measureText(s).width;
-      }, settings.fontScale, el._sourceFontRatio * LW);
+      }, settings.fontScale, el._sourceFontRatio * LW, free);
     const grown = fitted.width > baseW + .5 || fitted.height > baseH + .5;
     if (grown) {
-      const boxW = fitted.width + padX, boxH = fitted.height / shrink + padY;
-      const x = Math.max(0, Math.min(LW - boxW, x0 + w0 / 2 - boxW / 2));
-      const y = Math.max(0, Math.min(LH - boxH, y0 + h0 / 2 - boxH / 2));
-      setBox(el, x, y, boxW, boxH);
+      const b = place(fitted.width, fitted.height);
+      setBox(el, b.x, b.y, b.w, b.h);
     } else resetBox(el);
     text.textContent = fitted.lines.join('\n');
     text.style.whiteSpace = 'pre';

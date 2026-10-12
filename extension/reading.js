@@ -96,22 +96,26 @@
   // around the original one by these factors on both sides and never past the image. The smallest box that shows
   // the whole line at a readable size wins. fitText stays the strict fit; this is the one the page uses.
   const GROW_STEPS = [1.25, 1.5, 1.75, 2];
-  function fitGrowing(text, width, height, maxWidth, maxHeight, measure, scale = 1, preferredSize = 26) {
+  // free(width, height) says whether a box of that content size fits in the image without covering a neighbouring
+  // balloon. A grown box that is not free is skipped, so growth never hides another balloon.
+  function fitGrowing(text, width, height, maxWidth, maxHeight, measure, scale = 1, preferredSize = 26,
+                      free = () => true) {
     const readable = Math.min(14 * scale, Math.max(11, Math.min(26, preferredSize)) * scale);
     const plain = fitText(text, width, height, measure, scale, preferredSize);
     const original = {...plain, width, height};
     if (!plain.overflow && plain.size >= readable) return original;
     let fallback = plain.overflow ? null : original; // whole line, but not at a readable size
-    let last = original;
+    let roomiest = null; // the largest free box: as much of the line as fits without covering a neighbour
     for (const k of GROW_STEPS) {
       const w = Math.max(width, Math.min(maxWidth, width * k));
       const h = Math.max(height, Math.min(maxHeight, height * k));
+      if (!free(w, h)) continue;
       const grown = {...fitText(text, w, h, measure, scale, preferredSize), width: w, height: h};
+      roomiest = grown;
       if (!grown.overflow && grown.size >= readable) return grown;
       if (!grown.overflow && !fallback) fallback = grown;
-      last = grown;
     }
-    return fallback || last;
+    return fallback || roomiest || original;
   }
   function nextFontScale(value, action) {
     if (action === 'reset') return 1;
