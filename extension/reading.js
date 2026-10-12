@@ -130,16 +130,8 @@
       polite:'자연스러운 한국어 존댓말(해요체)로 번역하세요. 딱딱한 문어체를 피하고 의미와 감정을 유지하세요.'})[name] || '';
   }
   // ---- v0.5.0: subscription backends and shared wording (popup, options and the page use these) ----
-  const CONSENT_VERSION = '2026-10-10-text-only-v2'; // same value as the helper's config.CONSENT_VERSION
-  const CONSENT_TEXT = [
-    '이 백엔드를 고르면 번역할 대사 글자, 같은 작품의 앞 페이지 대사 일부, 용어집과 말투 지침이 Anthropic(Claude) 또는 OpenAI(Codex) 서버로 전송돼요. 이미지는 보내지 않아요.',
-    '이 PC에는 호출 횟수와 토큰 수만 기록하고 대사 내용은 기록하지 않아요. 5시간·7일 한도에 닿으면 자동으로 멈춰요.',
-    '데이터 보관과 학습에 관한 설정은 각 계정의 설정 화면에서 확인하세요.',
-    '구독 로그인은 개인 PC에서만 쓰세요. 이 확장을 다른 사람에게 나누거나 배포하면 안 돼요.',
-  ];
   const MODEL_INFO = {
     'claude-haiku-5-5': { label: 'Claude 구독', detail: 'Claude Haiku 5.5 · Claude Code 로그인', kind: 'subscription', backend: 'claude' },
-    'gpt-6-luna': { label: 'Codex 구독', detail: 'gpt-6-luna · Codex 로그인', kind: 'subscription', backend: 'codex' },
     'qwen3.5:9b': { label: '로컬 Qwen3.5', detail: 'Qwen3.5 9B · 이 PC · Ollama', kind: 'local', backend: null },
     'qwen3:8b': { label: '로컬 Qwen3', detail: 'Qwen3 8B · 이 PC · Ollama', kind: 'local', backend: null },
     'translategemma:4b': { label: '로컬 TranslateGemma', detail: 'TranslateGemma 4B · 이 PC · Ollama', kind: 'local', backend: null },
@@ -153,8 +145,6 @@
     not_logged_in: ['로그인 필요', 'warn'],
     api_key_detected: ['API 키 로그인', 'err'],
     unsupported: ['지원 안 함', 'err'],
-    sandbox_unverified: ['보안 점검 필요', 'warn'],
-    sandbox_failed: ['사용 불가', 'err'],
     backend_error: ['오류', 'err'],
     unchecked: ['확인 전', 'warn'],
   };
@@ -170,14 +160,10 @@
     region_too_small: '선택한 영역이 너무 작아요',
     tab_not_active: '번역할 탭으로 돌아온 뒤 다시 선택해 주세요',
     extension_reloaded: '확장이 새로 로드됐어요. 페이지를 새로고침해 주세요',
-    consent_required: '구독 번역은 설정에서 사용에 동의한 뒤 쓸 수 있어요',
-    consent_version_mismatch: '안내 내용이 바뀌었어요. 다시 동의해 주세요',
-    not_installed: 'Claude Code나 Codex가 설치돼 있지 않아요',
+    not_installed: 'Claude Code가 설치돼 있지 않아요',
     not_logged_in: '구독 로그인이 필요해요. 설정의 로그인 안내를 따라 주세요',
     api_key_detected: 'API 키로 로그인돼 있어요. 구독 로그인으로 바꿔 주세요',
     unsupported: '지원하지 않는 로그인 방식이에요',
-    sandbox_unverified: 'Codex 보안 점검을 먼저 통과해야 해요 (설정 화면)',
-    sandbox_failed: 'Codex 샌드박스가 이 PC에서 안전하게 동작하지 않아서 Codex 번역을 쓸 수 없어요',
     quota_paused: '구독 사용량 한도에 가까워 잠시 멈췄어요',
     quota_exhausted: '구독 사용량 한도에 도달했어요',
     auth_expired: '구독 로그인이 만료됐어요. 다시 로그인해 주세요',
@@ -255,7 +241,7 @@
     return plan;
   }
   globalThis.BalloonLensReading = {fitText, fitGrowing, sourceFrame, sourceFontSize, workSettings, nextFontScale, needsRetry, speechPreset,
-    validateBackup, BACKUP_KEYS, CONSENT_VERSION, CONSENT_TEXT, MODEL_INFO, MODEL_IDS, REVIEW_MODES, isSubscription,
+    validateBackup, BACKUP_KEYS, MODEL_INFO, MODEL_IDS, REVIEW_MODES, isSubscription,
     stateLabel, explainCode, planReadAhead};
   if (typeof module !== 'undefined') module.exports = globalThis.BalloonLensReading;
 })();

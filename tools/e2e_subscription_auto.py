@@ -91,18 +91,16 @@ class Quiet(SimpleHTTPRequestHandler):
 
 
 class Helper:
-    def __init__(self, data, claude_log, codex_log):
+    def __init__(self, data, claude_log):
         self.data = data
         self.out = open(data / "auto-helper.log", "a", encoding="utf-8")
-        env = {k: v for k, v in os.environ.items() if k not in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY")}
+        env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
         env.update({
             "BALLOONLENS_DATA": str(data),
             "BALLOONLENS_PORT": str(HELPER_PORT),
             "BALLOONLENS_CLAUDE_CONFIG_DIR": str(data / "claude-config"),
             "BALLOONLENS_CLAUDE_COMMAND": json.dumps([sys.executable, str(FIXTURES / "fake_claude.py"),
                                                       "--mode", "ok", "--log", str(claude_log)]),
-            "BALLOONLENS_CODEX_COMMAND": json.dumps([sys.executable, str(FIXTURES / "fake_codex.py"),
-                                                     "--mode", "sandbox_readable", "--log", str(codex_log)]),
         })
         self.proc = subprocess.Popen([sys.executable, "-m", "balloonlens"], cwd=str(HELPER), env=env,
                                      stdout=self.out, stderr=subprocess.STDOUT)
@@ -178,9 +176,8 @@ def main():
     errors = []
     helper = None
     try:
-        helper = Helper(data, out / "claude-calls.jsonl", out / "codex-calls.jsonl")
+        helper = Helper(data, out / "claude-calls.jsonl")
         ext = copy_extension(out)
-        helper.put("/v1/consents/claude", {"accept": True, "version": config.CONSENT_VERSION})
         with sync_playwright() as p:
             exe = None
             if not Path(p.chromium.executable_path).exists():

@@ -160,8 +160,7 @@ def test_a_second_image_is_read_while_the_first_is_still_translating(tmp_path, m
     manager = JobManager(PerImageOcr(), NoLocal(), cache, decode_image, router=router)
     manager.start()
     client = TestClient(create_app(manager, TOKEN, port=8787, tags=lambda: ["qwen3.5:9b"], extension_ids={EXT}))
-    client.put("/v1/consents/claude", json={"accept": True, "version": config.CONSENT_VERSION}, headers=AUTH)
-    first = client.post(f"/v1/jobs?src=ja&tgt=ko&model={CLAUDE}", content=png_with(0), headers=AUTH).json()["id"]
+    first =client.post(f"/v1/jobs?src=ja&tgt=ko&model={CLAUDE}", content=png_with(0), headers=AUTH).json()["id"]
     for _ in range(200):
         if backend.active == 1:
             break
@@ -174,7 +173,6 @@ def test_a_second_image_is_read_while_the_first_is_still_translating(tmp_path, m
 
 def test_subscription_jobs_for_several_images_run_at_once(helper):
     client, backend = helper
-    client.put("/v1/consents/claude", json={"accept": True, "version": config.CONSENT_VERSION}, headers=AUTH)
     # One image per allowed slot: the barrier in the fake CLI only opens when all of them are in flight together.
     ids = [client.post(f"/v1/jobs?src=ja&tgt=ko&model={CLAUDE}", content=png_with(k), headers=AUTH).json()["id"]
            for k in range(config.CLI_PARALLEL)]

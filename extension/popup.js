@@ -148,14 +148,13 @@ async function refreshSetup() {
   }
 }
 
-// Subscription status: consent first, then a pause from the usage limit, then the CLI's own state.
+// Subscription status: a pause from the usage limit, then the CLI's own state.
 async function renderSubscription(model) {
   const info = BalloonLensReading.MODEL_INFO[model];
   const data = await call("backends").catch(() => null);
   const row = data?.backends?.find((b) => b.id === info.backend);
   $("subCard").hidden = false;
   $("subTitle").textContent = info.label;
-  $("consentBox").hidden = true;
   $("pausedBox").hidden = true;
   if (!row) {
     $("subState").textContent = "";
@@ -167,16 +166,9 @@ async function renderSubscription(model) {
   $("subState").className = `badge ${kind}`;
   const u = row.usage || {};
   const caps = row.caps || {};
-  $("subUsage").textContent = `오늘 ${u.calls_today ?? 0}회 · 5시간 ${u.calls_5h ?? 0}/${caps.per_5h ?? "-"} · 7일 ${u.calls_7d ?? 0}/${caps.per_7d ?? "-"}`;
-  if (!row.consent?.current) {
-    $("consentList").replaceChildren(...BalloonLensReading.CONSENT_TEXT.map((line) => {
-      const li = document.createElement("li");
-      li.textContent = line;
-      return li;
-    }));
-    $("consentBox").hidden = false;
-    return setConn("동의 필요", "warn");
-  }
+  // A cap of 0 means no self-imposed limit (the official usage limit still applies).
+  const capText = (cap) => (cap === 0 ? "제한 없음" : cap ?? "-");
+  $("subUsage").textContent = `오늘 ${u.calls_today ?? 0}회 · 5시간 ${u.calls_5h ?? 0}/${capText(caps.per_5h)} · 7일 ${u.calls_7d ?? 0}/${capText(caps.per_7d)}`;
   if (row.paused) {
     const minutes = Math.max(1, Math.round(row.paused.retry_in_s / 60));
     $("pausedText").textContent = `${row.paused.reason}. 약 ${minutes}분 뒤 다시 시도할 수 있어요. 그동안은 로컬 모델로 이어서 번역할 수 있어요.`;
@@ -185,8 +177,8 @@ async function renderSubscription(model) {
   }
   if (row.state === "ready") return setConn("준비됨", "ok");
   setConn(text, kind);
-  // A sandbox, key or login-method problem will not fix itself: offer the local model. A missing login needs settings.
-  const localFirst = ["sandbox_failed", "api_key_detected", "unsupported"].includes(row.state);
+  // A key or login-method problem will not fix itself: offer the local model. A missing login needs settings.
+  const localFirst = ["api_key_detected", "unsupported"].includes(row.state);
   showNotice(kind === "err" ? "err" : "warn", `${info.label}을 쓸 수 없어요`, explain(row.state),
     localFirst ? { label: "로컬로 쓰기", run: useLocalModel } : { label: "설정 열기", run: openOptions });
 }
@@ -323,15 +315,6 @@ $("openShortcuts").addEventListener("click", (e) => {
   chrome.tabs.create({ url: "chrome://extensions/shortcuts" });
 });
 
-$("consentAccept").addEventListener("click", async () => {
-  const { backend } = BalloonLensReading.MODEL_INFO[currentModel()];
-  try {
-    await call("acceptConsent", { name: backend, version: BalloonLensReading.CONSENT_VERSION });
-  } catch (e) {
-    showNotice("err", "동의를 저장하지 못했어요", explain(e.message));
-  }
-  refreshSetup();
-});
 // Switching to the local model reuses the normal radio handler, so the choice is saved the same way.
 $("pausedLocal").addEventListener("click", useLocalModel);
 $("pausedRetry").addEventListener("click", async () => {

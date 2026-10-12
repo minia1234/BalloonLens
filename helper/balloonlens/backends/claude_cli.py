@@ -123,7 +123,7 @@ class ClaudeCodeBackend:
                       schema_name: str = "page") -> dict:
         """One structured call. Returns {"data": dict, "usage": {...}, "seconds": float} or raises BackendError.
 
-        schema_name is accepted for parity with the Codex adapter (which stores the schema in a file)."""
+        schema_name is accepted so every caller can pass it the same way."""
         self._ensure_dirs()
         system_path = self._system_file(system)
         args = ["-p", FIXED_TASK,

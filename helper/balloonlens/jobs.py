@@ -193,8 +193,10 @@ class JobManager:
         self._write_metrics(job)
 
     def _run(self, job: Job, t_start: float):
-        # A subscription call goes out only when consent, usage limits and the CLI's own state allow it.
+        # A subscription call goes out only when usage limits and the CLI's own state allow it.
+        t_gate = time.perf_counter()
         blocked = self.router.gate(job.model) if self.router and self.router.is_subscription(job.model) else None
+        job.timings["gate_ms"] = round((time.perf_counter() - t_gate) * 1000)
         if blocked:
             job.timings["blocked_by"] = blocked
             with self._lock:
@@ -202,8 +204,13 @@ class JobManager:
             return
         image_hash = sha256(job.image)
         # Reading the image is the GPU step: only one job reads at a time, while others wait on their CLI calls.
+        t_lock = time.perf_counter()
         with self._ocr_lock:
+            job.timings["ocr_lock_wait_ms"] = round((time.perf_counter() - t_lock) * 1000)
+            t_block = time.perf_counter()
+            t_decode = time.perf_counter()
             img = self.decode(job.image)
+            job.timings["decode_ms"] = round((time.perf_counter() - t_decode) * 1000)
             job.width, job.height, job.image_hash = img.width, img.height, image_hash
             key = ocr_key(image_hash, job.src, f"{config.OCR_VERSION}:{job.reading}")
             segments = self.cache.get_ocr(key)
@@ -236,13 +243,16 @@ class JobManager:
                 img.save(buf, 'JPEG', quality=85)
                 vision_image = base64.b64encode(buf.getvalue()).decode('ascii')
             del img
+            job.timings["ocr_block_ms"] = round((time.perf_counter() - t_block) * 1000)
 
         # The reader's own fixes win over OCR and are never overwritten by auto translation (section 3.4).
+        t_memory = time.perf_counter()
         edits = self.cache.get_edits(image_hash, job.src, job.tgt)
         inputs = memory.translation_inputs(self.cache, job.scope, job.src, job.tgt, job.model, job.options, image_hash)
         job.memory = inputs["memory"]
         # Same image, same rules: stored translations are reused instead of running the model again.
         reuse = memory.reuse_lines(self.cache, job.scope, image_hash, job.src, job.tgt, inputs["rules"]) if job.memory else {}
+        job.timings["memory_ms"] = round((time.perf_counter() - t_memory) * 1000)
         merged = []
         for s in segments:
             key = bbox_key(s["bbox"])

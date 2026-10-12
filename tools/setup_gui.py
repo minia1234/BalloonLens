@@ -78,17 +78,9 @@ def claude_text(c: dict) -> str:
     return f"{c.get('version')} · 로그인 됨"
 
 
-def codex_text(c: dict) -> str:
-    if not c.get("installed"):
-        return "설치 필요: npm install -g @openai/codex"
-    if not c.get("loggedIn"):
-        return "로그인 필요 (아래 로그인 창 버튼). 번역은 설정 화면에서 보안 점검 후 켜요"
-    return "로그인 됨 · 번역은 설정 화면에서 보안 점검 후 켜요"
-
-
 def status_rows(status: dict) -> list[tuple[str, str, str]]:
     """(name, text, state) for each line of the window. state is ok, warn or off."""
-    claude, codex = status.get("claude") or {}, status.get("codex") or {}
+    claude = status.get("claude") or {}
 
     def pick(good: bool, good_text: str, bad_text: str, bad_state: str = "warn") -> tuple[str, str]:
         return (good_text, "ok") if good else (bad_text, bad_state)
@@ -101,13 +93,11 @@ def status_rows(status: dict) -> list[tuple[str, str, str]]:
         helper = (f"포트 8787을 다른 프로그램({owner[6:]})이 쓰고 있어요. 그 프로그램을 끄고 '상태 다시 확인'을 누르세요.", "warn")
     ollama = pick(status.get("ollama"), "설치됨", "없음 (구독 번역에는 필요 없어요)", "off")
     claude_ok = bool(claude.get("installed") and claude.get("versionOk") and claude.get("loggedIn"))
-    codex_ok = bool(codex.get("installed") and codex.get("loggedIn"))
     return [
         ("번역 환경 (Python 패키지)", *deps),
         ("도우미 자동 실행 등록", *host),
         ("도우미", *helper),
         ("Claude Code", claude_text(claude), "ok" if claude_ok else "warn"),
-        ("Codex CLI", codex_text(codex), "ok" if codex_ok else "warn"),
         ("Ollama (선택 사항)", *ollama),
         ("크롬 확장", *extension_row(status.get("chromeExtension"))),
     ]
@@ -143,13 +133,9 @@ def claude_login_args(claude_path: str, config_dir: Path) -> list[str]:
     return ["powershell.exe", "-NoExit", "-NoProfile", "-Command", script]
 
 
-def codex_login_args(codex_path: str) -> list[str]:
-    return ["powershell.exe", "-NoExit", "-NoProfile", "-Command", f"& {ps_quote(codex_path)} login"]
-
-
 def diagnostics_text(status: dict, version: str) -> str:
     """For a bug report. Paths and states only: no dialogue text, no tokens, no file contents."""
-    claude, codex = status.get("claude") or {}, status.get("codex") or {}
+    claude = status.get("claude") or {}
     return "\n".join([
         "BalloonLens 설치 도우미 진단",
         f"- 설치 도구 버전: {version}",
@@ -160,8 +146,7 @@ def diagnostics_text(status: dict, version: str) -> str:
         f"- 도우미: {'실행 중' if status.get('helper') else '꺼짐'}",
         f"- 포트 상태: {status.get('portOwner') or '알 수 없음'}",
         f"- Claude Code: {claude.get('version') or '없음'} · 로그인 {'됨' if claude.get('loggedIn') else '안 됨'}",
-        f"- Codex CLI: {'있음' if codex.get('installed') else '없음'} · 로그인 {'됨' if codex.get('loggedIn') else '안 됨'}",
-        f"- Ollama(선택): {'있음' if status.get('ollama') else '없음'}",
+       f"- Ollama(선택): {'있음' if status.get('ollama') else '없음'}",
     ])
 
 
@@ -215,7 +200,7 @@ class SetupWindow:
         status_box = tk.Frame(frame, bd=1, relief="solid", padx=12, pady=8)
         status_box.pack(fill="x")
         for name in ("번역 환경 (Python 패키지)", "도우미 자동 실행 등록", "도우미", "Claude Code",
-                     "Codex CLI", "Ollama (선택 사항)", "크롬 확장"):
+                     "Ollama (선택 사항)", "크롬 확장"):
             row = tk.Frame(status_box)
             row.pack(fill="x", pady=3)
             dot = tk.Label(row, text="●", width=2, anchor="w")
@@ -229,8 +214,7 @@ class SetupWindow:
             ("전부 자동으로 준비", self.auto_setup, 0, 0),
             ("상태 다시 확인", self.refresh, 0, 1),
             ("Claude 로그인 창 열기", lambda: self.login("claude"), 1, 0),
-            ("Codex 로그인 창 열기", lambda: self.login("codex"), 1, 1),
-            ("크롬 확장 설치 안내", self.open_extension_wizard, 2, 0),
+           ("크롬 확장 설치 안내", self.open_extension_wizard, 2, 0),
             ("확장 폴더 열기 (경로 복사)", self.open_extension, 2, 1),
             ("진단 정보 복사", self.copy_diagnostics, 3, 0),
             ("자동 실행 등록 해제", self.uninstall, 3, 1),
@@ -353,12 +337,6 @@ class SetupWindow:
             config_dir = Path(self.status["dataDir"]) / "claude-config"
             config_dir.mkdir(parents=True, exist_ok=True)
             args = claude_login_args(path, config_dir)
-        else:
-            path = self.status.get("codexPath")
-            if not path:
-                messagebox.showinfo(APP, "Codex CLI가 없어요. 터미널에서 npm install -g @openai/codex 를 실행한 뒤 다시 확인하세요.")
-                return
-            args = codex_login_args(path)
         subprocess.Popen(args, creationflags=CREATE_NEW_CONSOLE)
         self._log("로그인 창을 열었어요. 거기서 로그인한 뒤 이 창에서 '상태 다시 확인'을 누르세요.")
 

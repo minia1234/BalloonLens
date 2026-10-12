@@ -9,7 +9,7 @@ import urllib.request
 import uvicorn
 
 from . import config
-from .backends import ClaudeCodeBackend, CliTranslator, CodexBackend, QuotaPolicy, Router
+from .backends import ClaudeCodeBackend, CliTranslator, QuotaPolicy, Router
 from .cache import Cache
 from .jobs import JobManager
 from .ocr import OcrEngine, decode_image
@@ -34,16 +34,12 @@ def port_state(port: int) -> str:
 
 
 def build_router(cache, local) -> Router:
-    """Claude Code and Codex backends plus the shared usage ledger. Building this starts no CLI process."""
+    """The Claude Code backend plus the shared usage ledger. Building this starts no CLI process."""
     quota = QuotaPolicy(cache)
     claude = ClaudeCodeBackend(command=config.claude_command(), config_dir=config.CLAUDE_CONFIG_DIR,
                                sandbox_dir=config.CLAUDE_SANDBOX_DIR, runtime_dir=config.RUNTIME_DIR,
                                model=config.CLAUDE_MODEL, effort=config.CLAUDE_EFFORT, timeout=config.CLI_TIMEOUT_S)
-    codex = CodexBackend(command=config.codex_command(), sandbox_dir=config.CODEX_SANDBOX_DIR,
-                         runtime_dir=config.RUNTIME_DIR, model=config.CODEX_MODEL, reasoning=config.CODEX_REASONING,
-                         timeout=config.CLI_TIMEOUT_S,
-                         sandbox_verdict=cache.get_flags("codex").get("verdict", ""))
-    backends = {"claude": claude, "codex": codex}
+    backends = {"claude": claude}
     cli = {name: CliTranslator(backend, cache, quota) for name, backend in backends.items()}
     return Router(local=local, cli=cli, backends=backends, quota=quota, cache=cache)
 

@@ -1,4 +1,4 @@
-"""Page translation through a CLI backend, and the Claude Code / Codex adapters with fake runners.
+"""Page translation through a CLI backend, and the Claude Code adapter with fake runners.
 
 The helpers (fake runner, fake backend, reply builders) live in test_backends.py.
 """
@@ -9,14 +9,13 @@ import pytest
 
 from balloonlens.backends.base import BackendError
 from balloonlens.backends.claude_cli import ClaudeCodeBackend
-from balloonlens.backends.codex_cli import CodexBackend
 from balloonlens.backends.page import CliTranslator
 from balloonlens.backends.prompts import PAGE_SCHEMA_JSON
 from balloonlens.backends.quota import QuotaPolicy
 from balloonlens.cache import Cache
 
-from test_backends import (FakeBackend, FakeRunner, auth_json, claude_backend, claude_result, codex_backend,
-                           codex_reply, items_reply, page_payload, probe_respond, proc, write_empty_list)
+from test_backends import (FakeBackend, FakeRunner, auth_json, claude_backend, claude_result, items_reply,
+                           page_payload, proc, write_empty_list)
 
 
 # ---------- page translation through a CLI backend ----------
@@ -223,106 +222,6 @@ def test_claude_failures_map_to_codes(tmp_path, res, code, retry):
     with pytest.raises(BackendError) as info:
         backend.complete_json("s", b"{}")
     assert info.value.code == code and info.value.retry_after == retry
-
-
-# ---------- Codex adapter (fake runner) ----------
-
-def test_codex_refuses_to_run_before_the_sandbox_probe_passed(tmp_path):
-    runner = FakeRunner(codex_reply('{"items":[]}'))
-    with pytest.raises(BackendError) as info:
-        codex_backend(tmp_path, runner, verified=False).complete_json("s", b"{}")
-    assert info.value.code == "sandbox_unverified" and runner.calls == []
-
-
-def test_codex_argv_is_read_only_isolated_and_keeps_dialogue_off_the_command_line(tmp_path):
-    payload = page_payload([(1, "待って")])
-    runner = FakeRunner(codex_reply(json.dumps({"items": [{"id": 1, "text": "잠깐", "review": False}]})))
-    out = codex_backend(tmp_path, runner).complete_json("system words", payload, model="gpt-6-luna")
-    call = runner.calls[0]
-    argv = call["argv"]
-    for item in ("exec", "--ignore-user-config", "--ignore-rules", "--ephemeral", "--skip-git-repo-check", "--json"):
-        assert item in argv
-    assert argv[argv.index("-m") + 1] == "gpt-6-luna"
-    assert argv[argv.index("-s") + 1] == "read-only"
-    assert argv[argv.index("-c") + 1] == 'model_reasoning_effort="low"'
-    assert "待って" not in " ".join(argv)
-    assert call["stdin"].startswith(b"system words\n\n<DATA>\n") and call["stdin"].endswith(b"\n</DATA>\n")
-    assert "OPENAI_API_KEY" not in call["env"]
-    assert out["data"]["items"][0]["text"] == "잠깐"
-    assert out["usage"] == {"input": 9, "output": 4, "cached": 2}
-
-
-def test_codex_tool_use_discards_the_reply(tmp_path):
-    tool = {"type": "item.completed", "item": {"type": "command_execution", "command": "type secret.txt"}}
-    runner = FakeRunner(codex_reply('{"items":[]}', events=[tool]))
-    backend = codex_backend(tmp_path, runner)
-    with pytest.raises(BackendError) as info:
-        backend.complete_json("s", b"{}")
-    assert info.value.code == "tool_attempt"
-    assert list((tmp_path / "rt").glob("codex-out-*.json")) == []
-
-
-def quota_event(argv, stdin):
-    event = {"type": "error", "message": "You've hit your usage limit. Try again in 3 hours."}
-    return proc(json.dumps(event) + "\n", stderr="usage limit", code=1)
-
-
-def auth_event(argv, stdin):
-    event = {"type": "turn.failed", "error": {"message": "Your login has expired."}}
-    return proc(json.dumps(event) + "\n", code=1)
-
-
-def timeout_event(argv, stdin):
-    return proc(timed_out=True)
-
-
-@pytest.mark.parametrize("respond, code, retry", [
-    (quota_event, "quota_exhausted", 10800),
-    (auth_event, "auth_expired", None),
-    (write_empty_list, "schema_violation", None),
-    (timeout_event, "timeout", None),
-])
-def test_codex_failures_map_to_codes(tmp_path, respond, code, retry):
-    with pytest.raises(BackendError) as info:
-        codex_backend(tmp_path, FakeRunner(respond)).complete_json("s", b"{}")
-    assert info.value.code == code and info.value.retry_after == retry
-
-
-def test_codex_preflight_states(tmp_path):
-    ok = FakeRunner(lambda argv, stdin: proc("Logged in using ChatGPT\n"))
-    backend = codex_backend(tmp_path, ok, verified=False)
-    assert backend.preflight().state == "sandbox_unverified"
-    backend.set_sandbox_verified(True)
-    assert backend.preflight().state == "ready"
-    logged_out = FakeRunner(lambda argv, stdin: proc("Not logged in", code=1))
-    assert codex_backend(tmp_path, logged_out).preflight().state == "not_logged_in"
-    missing = CodexBackend(command=[str(tmp_path / "no-codex.exe")], sandbox_dir=tmp_path / "sb",
-                           runtime_dir=tmp_path / "rt", clock=lambda: 1.0)
-    assert missing.preflight().state == "not_installed"
-
-
-@pytest.mark.parametrize("mode, verdict, passed, attempted", [
-    ("readable", "file_readable", False, True),
-    ("blocked", "read_blocked", True, True),
-    ("silent", "inconclusive", False, False),
-])
-def test_sandbox_probe_verdicts(tmp_path, mode, verdict, passed, attempted):
-    backend = codex_backend(tmp_path, FakeRunner(probe_respond(mode)), verified=False)
-    canary_dir = tmp_path / "outside"
-    result = backend.sandbox_probe(canary_dir)
-    assert (result["verdict"], result["passed"], result["attempted"]) == (verdict, passed, attempted)
-    assert list(canary_dir.glob("canary-*.txt")) == []
-
-
-def test_sandbox_probe_canary_is_a_random_marker_not_a_credential(tmp_path):
-    seen = {}
-
-    def respond(argv, stdin):
-        seen["text"] = Path(json.loads(stdin)["path"]).read_text(encoding="utf-8")
-        return probe_respond("silent")(argv, stdin)
-
-    codex_backend(tmp_path, FakeRunner(respond)).sandbox_probe(tmp_path / "outside")
-    assert seen["text"].startswith("CANARY-") and len(seen["text"]) == len("CANARY-") + 32
 
 
 def test_cap_reached_mid_page_stops_the_next_chunk_and_the_blocked_call_is_not_counted(tmp_path):

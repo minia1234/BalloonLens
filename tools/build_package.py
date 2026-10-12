@@ -16,12 +16,12 @@ TOOLS = ('setup_windows.ps1', 'install_windows.ps1', 'install_windows.cmd', 'uni
 SETUP_EXE = ROOT / 'release' / 'BalloonLens-Setup.exe'
 # Nothing with these names may end up in the ZIP: local secrets, caches, runtime folders and CLI logins.
 FORBIDDEN = ('.venv/', '__pycache__/', 'token.txt', 'cache.sqlite', 'bench_out/', 'profile/', 'claude-config/',
-             'codex-sandbox/', 'runtime/', 'metrics.jsonl', 'helper.log', 'auth.json', '.credentials.json')
+             'runtime/', 'metrics.jsonl', 'helper.log', 'auth.json', '.credentials.json')
 REQUIRED = {'Setup.cmd', 'BalloonLens-Setup.exe', 'tools/setup_windows.ps1', 'tools/setup_gui.py',
             'extension/manifest.json', 'extension/reading.js',
             'helper/balloonlens/presentation.py', 'helper/balloonlens/backends/claude_cli.py',
-            'helper/balloonlens/backends/codex_cli.py', 'helper/balloonlens/backends/page.py',
-            'helper/requirements.txt', 'helper/tests/fixtures/fake_claude.py', 'helper/tests/fixtures/fake_codex.py',
+            'helper/balloonlens/backends/page.py',
+            'helper/requirements.txt', 'helper/tests/fixtures/fake_claude.py',
             'tools/probe_backends.py', 'tools/e2e_subscription.py', 'tools/blind_eval.py'}
 
 

@@ -84,7 +84,8 @@ async function nativeCall(cmd) {
 let starting = null;
 async function ensureHelper() {
   try {
-    return await helper("/v1/status", { timeoutMs: 2500 });
+    // Right after the helper starts it can be slow (OCR warm-up, Ollama probe), so give it more than 2.5 s.
+    return await helper("/v1/status", { timeoutMs: 8000 });
   } catch (e) {
     if (e.message !== "helper_unreachable") throw e;
   }
@@ -354,7 +355,7 @@ const handlers = {
     const q = new URLSearchParams({ scope, model: usable ? model : "qwen3.5:9b" });
     return helper(`/v1/works/suggest?${q}`, { method: "POST", timeoutMs: 180000 });
   },
-  // ---- subscription backends (v0.5.0): the helper keeps consent, limits and CLI state ----
+  // ---- subscription backends (v0.5.0): the helper keeps limits and CLI state ----
   async backends() {
     return helper("/v1/backends", { timeoutMs: 3000 });
   },
@@ -364,21 +365,11 @@ const handlers = {
   async resumeBackend({ name }) {
     return helper(`/v1/backends/${encodeURIComponent(name)}/resume`, { method: "POST" });
   },
-  // The reader accepts the text the page showed; the helper refuses a version it does not currently use.
-  async acceptConsent({ name, version }) {
-    return helper(`/v1/consents/${encodeURIComponent(name)}`, { method: "PUT", json: { accept: true, version } });
-  },
-  async revokeConsent({ name }) {
-    return helper(`/v1/consents/${encodeURIComponent(name)}`, { method: "DELETE" });
-  },
   async setCaps({ name, per_5h, per_7d }) {
     return helper(`/v1/backends/${encodeURIComponent(name)}/caps`, { method: "PUT", json: { per_5h, per_7d } });
   },
   async calibrate({ backend, percent }) {
     return helper("/v1/usage/calibration", { method: "PUT", json: { backend, percent } });
-  },
-  async sandboxCheck() {
-    return helper("/v1/backends/codex/sandbox-check", { method: "POST", timeoutMs: 150000 });
   },
   async progress({ state }, sender) {
     const tabId = sender.tab?.id;

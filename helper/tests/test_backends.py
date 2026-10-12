@@ -11,7 +11,6 @@ from balloonlens.backends import validate
 from balloonlens.backends.base import (BackendError, BackendStatus, ProcResult, api_key_vars_present,
                                        classify_failure, clean_env, normalize_usage, parse_json_loose)
 from balloonlens.backends.claude_cli import ClaudeCodeBackend
-from balloonlens.backends.codex_cli import CodexBackend, is_tool_event, parse_events
 from balloonlens.backends.page import CliTranslator
 from balloonlens.backends.prompts import PAGE_SCHEMA_JSON, build_payload, chunk_ids, encode_payload, system_prompt
 from balloonlens.backends.quota import QuotaPolicy
@@ -59,7 +58,7 @@ class FakeBackend:
         self.backend_id = backend_id
         self.cache_id = f"{backend_id}-cli"
         self.label = backend_id
-        self.model = config.CLAUDE_MODEL if backend_id == "claude" else config.CODEX_MODEL
+        self.model = config.CLAUDE_MODEL
         self.handler = handler or items_reply()
         self.state = state
         self.calls = []
@@ -95,40 +94,9 @@ def claude_backend(tmp_path, runner, environ=None):
                              environ=environ or {"PATH": "x", "ANTHROPIC_API_KEY": "sk-ant-api03-LEAKLEAKLEAK"})
 
 
-def codex_backend(tmp_path, runner, verified=True):
-    return CodexBackend(command=[sys.executable], sandbox_dir=tmp_path / "sb", runtime_dir=tmp_path / "rt",
-                        runner=runner, clock=lambda: 100.0, sandbox_verified=verified,
-                        environ={"PATH": "x", "OPENAI_API_KEY": "sk-LEAKLEAKLEAK"})
-
-
-def codex_reply(items_json, events=()):
-    """Writes the -o file and prints JSONL the way codex exec --json does."""
-    def respond(argv, stdin):
-        Path(argv[argv.index("-o") + 1]).write_text(items_json, encoding="utf-8")
-        lines = [json.dumps(e) for e in events]
-        lines.append(json.dumps({"type": "turn.completed",
-                                 "usage": {"input_tokens": 9, "cached_input_tokens": 2, "output_tokens": 4}}))
-        return proc("\n".join(lines) + "\n")
-    return respond
-
-
 def write_empty_list(argv, stdin):
     Path(argv[argv.index("-o") + 1]).write_text("[]", encoding="utf-8")
     return proc("")
-
-
-def probe_respond(mode):
-    """mode: readable (canary text comes back), blocked (tool tried, no text), silent (no tool, no text)."""
-    def respond(argv, stdin):
-        token = Path(json.loads(stdin)["path"]).read_text(encoding="utf-8")
-        text = json.dumps({"text": token if mode == "readable" else ""})
-        events = []
-        if mode in ("readable", "blocked"):
-            events.append({"type": "item.completed", "item": {"type": "command_execution", "command": "type canary"}})
-        events.append({"type": "item.completed", "item": {"type": "agent_message", "text": text}})
-        Path(argv[argv.index("-o") + 1]).write_text(text, encoding="utf-8")
-        return proc("\n".join(json.dumps(e) for e in events) + "\n")
-    return respond
 
 
 def page_payload(ids_texts):
@@ -139,15 +107,15 @@ def page_payload(ids_texts):
 
 def test_clean_env_keeps_allowlisted_names_and_drops_keys_and_endpoints():
     env = clean_env({"PATH": "C:\\bin", "SystemRoot": "C:\\Windows", "ANTHROPIC_API_KEY": "sk-ant-x",
-                     "OPENAI_BASE_URL": "https://evil.example", "HTTPS_PROXY": "http://proxy:8080"},
+                     "ANTHROPIC_BASE_URL": "https://evil.example", "HTTPS_PROXY": "http://proxy:8080"},
                     {"CLAUDE_CONFIG_DIR": "D:\\cfg"})
     assert env == {"PATH": "C:\\bin", "SystemRoot": "C:\\Windows", "HTTPS_PROXY": "http://proxy:8080",
                    "CLAUDE_CONFIG_DIR": "D:\\cfg"}
 
 
 def test_api_key_names_are_reported_without_values():
-    assert api_key_vars_present({"OPENAI_API_KEY": "sk-secret", "ANTHROPIC_API_KEY": "", "PATH": "x"}) == [
-        "OPENAI_API_KEY"]
+    assert api_key_vars_present({"ANTHROPIC_API_KEY": "sk-secret", "CLAUDE_CODE_OAUTH_TOKEN": "", "PATH": "x"}) == [
+        "ANTHROPIC_API_KEY"]
 
 
 @pytest.mark.parametrize("text, code", [
@@ -204,15 +172,6 @@ def test_system_prompt_names_languages_and_treats_page_text_as_data():
     assert "PROOFREADING" in system_prompt("ja", "ko", proofread=True)
 
 
-def test_codex_events_are_read_and_non_text_items_count_as_tool_use():
-    stdout = (b'{"type":"thread.started"}\nnot json\n'
-              b'{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}\n'
-              b'{"type":"item.completed","item":{"type":"command_execution","command":"dir"}}\n')
-    events = parse_events(stdout)
-    assert len(events) == 3
-    assert [is_tool_event(e) for e in events] == [False, False, True]
-
-
 # ---------- page-level checks ----------
 
 def test_page_checks_flag_secrets_links_paths_and_meta_text():
@@ -246,18 +205,32 @@ def test_default_caps_and_cap_validation(tmp_path):
     assert quota.caps("claude") == {"per_5h": 2, "per_7d": 10}
 
 
+def test_zero_caps_mean_no_self_imposed_limit(tmp_path):
+    clock = Clock()
+    quota = QuotaPolicy(Cache(tmp_path / "c.db"), clock=clock)
+    quota.set_caps("claude", 0, 0)
+    assert quota.caps("claude") == {"per_5h": 0, "per_7d": 0}
+    for _ in range(25):  # above the default 20 per five hours
+        quota.record(backend="claude", model="claude-haiku-5-5", lines=1, usage={}, seconds=0.1, outcome="ok")
+        clock.now += 1
+    quota.check("claude")  # no raise
+    with pytest.raises(ValueError):
+        quota.set_caps("claude", 0, 10)  # one zero alone is not "no limit"
+
+
 def test_five_hour_cap_blocks_then_releases_when_the_window_passes(tmp_path):
     clock = Clock()
     quota = QuotaPolicy(Cache(tmp_path / "c.db"), clock=clock)
-    quota.set_caps("codex", 2, 10)
+    quota.set_caps("claude", 2, 10)
     for _ in range(2):
-        quota.record(backend="codex", model="gpt-6-luna", lines=3, usage={"input": 1}, seconds=0.1, outcome="ok")
+        quota.record(backend="claude", model="claude-haiku-5-5", lines=3, usage={"input": 1}, seconds=0.1,
+                     outcome="ok")
         clock.now += 60
     with pytest.raises(BackendError) as info:
-        quota.check("codex")
+        quota.check("claude")
     assert info.value.code == "quota_paused"
     clock.now += 5 * 3600 + 1
-    quota.check("codex")
+    quota.check("claude")
 
 
 def test_quota_exhausted_pauses_with_a_clamped_retry(tmp_path):
@@ -292,7 +265,7 @@ def test_calibration_gives_a_per_call_estimate(tmp_path):
 def make_router(tmp_path, clock, claude_state="ready"):
     cache = Cache(tmp_path / "c.db")
     quota = QuotaPolicy(cache, clock=clock)
-    backends = {"claude": FakeBackend("claude", state=claude_state), "codex": FakeBackend("codex")}
+    backends = {"claude": FakeBackend("claude", state=claude_state)}
     cli = {name: CliTranslator(backend, cache, quota) for name, backend in backends.items()}
     router = Router(local="LOCAL", cli=cli, backends=backends, quota=quota, cache=cache, clock=clock)
     return router, cache, backends
@@ -301,17 +274,15 @@ def make_router(tmp_path, clock, claude_state="ready"):
 def test_routing_by_model_prefix(tmp_path):
     router, _, _ = make_router(tmp_path, Clock())
     assert router.backend_of("claude-haiku-5-5") == "claude"
-    assert router.backend_of("gpt-6-luna") == "codex"
+    assert router.backend_of("gpt-6-luna") is None
     assert router.backend_of("qwen3.5:9b") is None
     assert router.translator_for("qwen3.5:9b") == "LOCAL"
-    assert router.translator_for("gpt-6-luna") is router.cli["codex"]
+    assert router.translator_for("claude-haiku-5-5") is router.cli["claude"]
 
 
-def test_gate_checks_consent_then_quota_then_cli_state(tmp_path):
+def test_gate_checks_quota_then_cli_state(tmp_path):
     clock = Clock()
-    router, cache, backends = make_router(tmp_path, clock, claude_state="not_logged_in")
-    assert router.gate("claude-haiku-5-5") == "consent_required"
-    cache.put_consent("claude", config.CONSENT_VERSION, clock.now)
+    router, _, backends = make_router(tmp_path, clock, claude_state="not_logged_in")
     assert router.gate("claude-haiku-5-5") == "not_logged_in"
     router.quota.pause("claude", 600, "test pause")
     assert router.gate("claude-haiku-5-5") == "quota_paused"
@@ -322,17 +293,8 @@ def test_gate_checks_consent_then_quota_then_cli_state(tmp_path):
     assert router.gate("qwen3.5:9b") is None
 
 
-def test_consent_for_an_older_disclosure_does_not_count(tmp_path):
-    clock = Clock()
-    router, cache, _ = make_router(tmp_path, clock)
-    cache.put_consent("claude", "2025-01-01-old", clock.now)
-    assert router.gate("claude-haiku-5-5") == "consent_required"
-
-
-def test_summary_lists_both_backends_with_their_limits(tmp_path):
+def test_summary_lists_the_claude_backend_with_its_limits(tmp_path):
     router, _, _ = make_router(tmp_path, Clock())
     rows = {row["id"]: row for row in router.summary()}
-    assert set(rows) == {"claude", "codex"}
+    assert set(rows) == {"claude"}
     assert rows["claude"]["caps"] == {"per_5h": 20, "per_7d": 150}
-    assert rows["codex"]["consent"]["current"] is False
-    assert rows["codex"]["sandbox_verified"] is True

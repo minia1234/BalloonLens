@@ -1,6 +1,6 @@
 """Shared pieces for the subscription CLI backends: errors, status, a safe process runner, env allowlist.
 
-Everything here is deliberately boring: no model knowledge, no translation logic. The Claude and Codex
+Everything here is deliberately boring: no model knowledge, no translation logic. The Claude
 adapters build on it, and tests drive it with small fake CLIs.
 """
 from __future__ import annotations
@@ -21,7 +21,7 @@ from typing import Mapping, Sequence
 # Codes that stop every further call to that backend until the reader fixes the cause.
 FATAL_CODES = frozenset({
     "not_installed", "not_logged_in", "api_key_detected", "auth_expired", "unsupported",
-    "quota_exhausted", "quota_paused", "sandbox_unverified", "sandbox_failed", "consent_required", "backend_error",
+    "quota_exhausted", "quota_paused", "backend_error",
     "config_mismatch",
 })
 # Codes where one more try of the same request is worth a call.
@@ -38,7 +38,7 @@ _ALLOWED_ENV = (
     "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "CLAUDE_CODE_GIT_BASH_PATH",
 )
 _ALLOWED_UPPER = frozenset(name.upper() for name in _ALLOWED_ENV)
-API_KEY_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY")
+API_KEY_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
 
 _NO_WINDOW = {"creationflags": 0x08000000} if os.name == "nt" else {}
 
@@ -119,7 +119,7 @@ def cancel_scope(should_cancel):
 @dataclass
 class BackendStatus:
     backend: str
-    state: str = "unchecked"  # unchecked | ready | not_installed | not_logged_in | api_key_detected | sandbox_unverified | sandbox_failed | unsupported | backend_error
+    state: str = "unchecked"  # unchecked | ready | not_installed | not_logged_in | api_key_detected | unsupported | backend_error
     detail: str = ""
     version: str = ""
     checked_at: float = 0.0

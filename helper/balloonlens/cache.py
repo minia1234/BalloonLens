@@ -71,11 +71,6 @@ CREATE TABLE IF NOT EXISTS usage_events (
   outcome TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS usage_by_backend_ts ON usage_events (backend, ts);
-CREATE TABLE IF NOT EXISTS consents (
-  backend TEXT PRIMARY KEY,
-  version TEXT NOT NULL,
-  accepted REAL NOT NULL
-);
 CREATE TABLE IF NOT EXISTS backend_state (
   backend TEXT PRIMARY KEY,
   paused_until REAL NOT NULL,
@@ -330,21 +325,6 @@ class Cache:
     def total_usage(self, backend) -> int:
         with self._lock:
             return self._db.execute("SELECT COUNT(*) FROM usage_events WHERE backend=?", (backend,)).fetchone()[0]
-
-    def get_consent(self, backend):
-        with self._lock:
-            row = self._db.execute("SELECT version, accepted FROM consents WHERE backend=?", (backend,)).fetchone()
-        return {"version": row[0], "accepted": row[1]} if row else None
-
-    def put_consent(self, backend, version, accepted):
-        with self._lock:
-            self._db.execute("INSERT OR REPLACE INTO consents VALUES (?, ?, ?)", (backend, version, float(accepted)))
-            self._db.commit()
-
-    def delete_consent(self, backend):
-        with self._lock:
-            self._db.execute("DELETE FROM consents WHERE backend=?", (backend,))
-            self._db.commit()
 
     def get_pause(self, backend):
         with self._lock:

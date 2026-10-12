@@ -23,10 +23,6 @@
   <div id="subCard" class="card sub-card" hidden>
     <div class="row"><b id="subTitle"></b><span id="subState" class="badge"></span></div>
     <small id="subUsage" class="muted"></small>
-    <div id="consentBox" hidden>
-      <ul id="consentList" class="consent-list"></ul>
-      <button id="consentAccept" class="btn primary">동의하고 쓰기</button>
-    </div>
     <div id="pausedBox" class="paused-box" hidden>
       <p id="pausedText" class="muted"></p>
       <div class="row2"><button id="pausedLocal" class="btn">로컬로 계속</button><button id="pausedRetry" class="btn">다시 시도</button></div>
@@ -84,7 +80,6 @@
     <p class="field-label">번역 방식</p>
     <div class="seg-ctl" role="radiogroup" aria-label="번역 방식" data-field="model">
       <button role="radio" data-value="claude-haiku-5-5">Claude 구독<small>Haiku · 구독 사용량</small></button>
-      <button role="radio" data-value="gpt-6-luna">Codex 구독<small>luna · 구독 사용량</small></button>
       <button role="radio" data-value="qwen3.5:9b">로컬<small>Qwen3.5 · 이 PC</small></button>
     </div>
   </div>

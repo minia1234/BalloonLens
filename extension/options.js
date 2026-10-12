@@ -65,7 +65,7 @@ async function refresh() {
 
   setStep("step-demo", demoDone ? "ok" : h ? "todo" : "wait", null, button(demoDone ? "다시 해보기" : "샘플 번역", runDemo, !demoDone && !!h));
 
-  const subReady = backends.some((b) => b.state === "ready" && b.consent?.current);
+  const subReady = backends.some((b) => b.state === "ready");
   const localReady = !!h?.ollama && h.models.some((m) => m.installed && m.kind !== "subscription");
   const ready = !!h && setup.permission && (subReady || localReady);
   const summary = $("setupSummary");
@@ -73,15 +73,11 @@ async function refresh() {
   summary.className = `badge ${ready ? "ok" : "warn"}`;
 }
 
-const BACKEND_TITLE = { claude: "Claude Code 구독 · Haiku 5.5", codex: "Codex 구독 · gpt-6-luna" };
+const BACKEND_TITLE = { claude: "Claude Code 구독 · Haiku 5.5" };
 const LOGIN_HELP = {
   claude: {
     cmd: '$env:CLAUDE_CONFIG_DIR = "$env:LOCALAPPDATA\\BalloonLens\\claude-config"; claude auth login',
     note: "PowerShell에 한 줄로 붙여 넣고 실행하세요. 브라우저에서 Claude 계정으로 로그인하면 돼요. 이 폴더는 번역 전용이라 개인 설정(CLAUDE.md)을 읽지 않아요.",
-  },
-  codex: {
-    cmd: "codex login",
-    note: "PowerShell에서 실행하고 ChatGPT 계정으로 로그인하세요. 번역은 읽기 전용 샌드박스 안에서만 돌아요.",
   },
 };
 const NEEDS_LOGIN = ["not_installed", "not_logged_in", "api_key_detected", "unsupported"];
@@ -128,32 +124,14 @@ function loginHelp(id) {
   return box;
 }
 
-function sandboxBox(b) {
-  const box = document.createElement("div");
-  box.className = "copy-box";
-  const note = document.createElement("p");
-  note.className = "muted";
-  note.textContent = b.sandbox_verified
-    ? "보안 점검 통과: 이 PC의 Codex 샌드박스가 사용자 폴더의 파일을 읽지 못했어요."
-    : b.state === "sandbox_failed"
-      ? "이 PC에서는 Codex를 쓸 수 없어요. 샌드박스가 사용자 폴더의 파일을 읽거나 시작되지 않았어요."
-      : "보안 점검 전에는 Codex로 번역하지 않아요. 점검은 모델을 부르지 않고 이 PC의 샌드박스만 확인해요.";
-  box.append(note);
-  if (!b.sandbox_verified) {
-    box.append(button("보안 점검 실행", async () => {
-      const verdict = await attempt(() => call("sandboxCheck"), "점검하지 못했어요");
-      if (verdict) alert(verdict.passed ? "보안 점검을 통과했어요." : "보안 점검을 통과하지 못했어요. Codex 번역은 꺼진 상태로 둘게요.");
-    }, true));
-  }
-  return box;
-}
 
 function usageLine(b) {
   const u = b.usage || {};
   const caps = b.caps || {};
   const p = document.createElement("p");
   p.className = "muted";
-  p.textContent = `오늘 ${u.calls_today ?? 0}회 · 5시간 ${u.calls_5h ?? 0}/${caps.per_5h ?? "-"} · 7일 ${u.calls_7d ?? 0}/${caps.per_7d ?? "-"} · 이 PC가 센 호출 수예요`;
+  const capText = (cap) => (cap === 0 ? "제한 없음" : cap ?? "-");
+  p.textContent = `오늘 ${u.calls_today ?? 0}회 · 5시간 ${u.calls_5h ?? 0}/${capText(caps.per_5h)} · 7일 ${u.calls_7d ?? 0}/${capText(caps.per_7d)} · 이 PC가 센 호출 수예요`;
   return p;
 }
 
@@ -161,10 +139,11 @@ function capsForm(b) {
   const wrap = document.createElement("div");
   wrap.className = "inline-fields";
   const five = document.createElement("input");
-  Object.assign(five, { type: "number", min: 1, max: 10000, value: b.caps?.per_5h ?? 20 });
+  // 0 in both boxes = no self-imposed limit.
+  Object.assign(five, { type: "number", min: 0, max: 10000, value: b.caps?.per_5h ?? 20 });
   const week = document.createElement("input");
-  Object.assign(week, { type: "number", min: 1, max: 10000, value: b.caps?.per_7d ?? 150 });
-  wrap.append(labeled("5시간 한도", five), labeled("7일 한도", week),
+  Object.assign(week, { type: "number", min: 0, max: 10000, value: b.caps?.per_7d ?? 150 });
+  wrap.append(labeled("5시간 한도 (0 = 없음)", five), labeled("7일 한도 (0 = 없음)", week),
     button("한도 저장", () => attempt(() => call("setCaps", { name: b.id, per_5h: Number(five.value), per_7d: Number(week.value) }), "한도를 저장하지 못했어요")));
   return wrap;
 }
@@ -205,22 +184,8 @@ function backendCard(b) {
   const act = document.createElement("div");
   act.className = "bc-act";
 
-  if (!b.consent?.current) {
-    const list = document.createElement("ul");
-    list.className = "consent-list";
-    for (const line of BalloonLensReading.CONSENT_TEXT) {
-      const li = document.createElement("li");
-      li.textContent = line;
-      list.append(li);
-    }
-    body.append(list);
-    act.append(button("사용에 동의", () => attempt(() => call("acceptConsent", { name: b.id, version: BalloonLensReading.CONSENT_VERSION }), "동의를 저장하지 못했어요"), true));
-  } else {
-    act.append(button("동의 철회", () => attempt(() => call("revokeConsent", { name: b.id }), "철회하지 못했어요")));
-  }
   if (NEEDS_LOGIN.includes(b.state)) body.append(loginHelp(b.id));
-  if (b.id === "codex") body.append(sandboxBox(b));
-  if (b.paused) {
+ if (b.paused) {
     const p = document.createElement("p");
     p.className = "muted";
     p.textContent = `${b.paused.reason} · 약 ${Math.max(1, Math.round(b.paused.retry_in_s / 60))}분 뒤 다시 시도할 수 있어요`;
@@ -273,10 +238,10 @@ function renderModels(h, backends = []) {
       box.append(row);
     }
   }
-  const subReady = backends.some((b) => b.state === "ready" && b.consent?.current);
+  const subReady = backends.some((b) => b.state === "ready");
   const localReady = h.ollama && h.models.some((m) => m.installed && m.kind !== "subscription");
   setStep("step-models", subReady || localReady ? "ok" : "todo",
-    subReady ? "구독 번역을 쓸 수 있어요." : localReady ? "로컬 모델이 준비됐어요." : "Claude나 Codex에 로그인하거나 로컬 모델을 하나 받아 주세요.");
+    subReady ? "구독 번역을 쓸 수 있어요." : localReady ? "로컬 모델이 준비됐어요." : "Claude에 로그인하거나 로컬 모델을 하나 받아 주세요.");
 }
 
 async function pull(name, row) {

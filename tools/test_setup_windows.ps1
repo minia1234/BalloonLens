@@ -22,6 +22,6 @@ Invoke-Checked $python @('-c', 'pass')
 Assert (Test-Dependencies $python) 'Existing environment must be reusable'
 Assert (-not (Test-Dependencies $python 'package_that_does_not_exist_123')) 'Missing dependency must be detected'
 $report = Get-StatusReport | ConvertFrom-Json
-Assert ($report.root -and $null -ne $report.deps -and $null -ne $report.nativeHost -and $null -ne $report.helper -and $null -ne $report.claude.installed -and $null -ne $report.codex.installed) 'Status report has the fields the setup window reads'
+Assert ($report.root -and $null -ne $report.deps -and $null -ne $report.nativeHost -and $null -ne $report.helper -and $null -ne $report.claude.installed) 'Status report has the fields the setup window reads'
 Assert ((Get-PortOwner 49997) -eq 'free') 'A port nobody uses reads as free'
 Write-Output 'Installer checks: 12 passed'

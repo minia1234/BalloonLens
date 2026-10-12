@@ -1,4 +1,4 @@
-"""Shared pieces of the fake claude and codex CLIs. Test-only, never shipped.
+"""Shared pieces of the fake claude CLI. Test-only, never shipped.
 
 Leading options are for the test harness and are removed before the real flags are read:
 --mode NAME picks the behaviour, --log PATH appends one JSON line per translation call.
@@ -29,7 +29,7 @@ def record(log, argv, stdin: bytes):
 
 
 def data_body(stdin: bytes) -> dict:
-    """The JSON page data between the DATA markers that codex_cli.complete_json writes."""
+    """The JSON page data between the DATA markers that the subscription adapter writes."""
     inner = stdin.split(b"<DATA>\n", 1)[1].rsplit(b"\n</DATA>", 1)[0]
     return json.loads(inner.decode("utf-8"))
 

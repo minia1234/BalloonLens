@@ -189,6 +189,7 @@ class OcrEngine:
         self._reader = None
         self._manga = None
         self._init_lock = threading.Lock()  # warmup thread and worker may both ask for a model
+        self._infer_lock = threading.Lock()  # one inference at a time: the warm-up pass and real reads share the GPU
 
     @property
     def reader(self):
@@ -214,6 +215,19 @@ class OcrEngine:
         _ = self.reader
         if "ja" in src_langs:
             _ = self.manga
+        self.prime(src_langs)
+
+    def prime(self, src_langs=("ja", "en")):
+        """The first inference on a GPU is slow (its kernels are set up then): measured 26 s for the first page after
+        a restart, against about 1 s after that. Run one small input through each model now, so the first real page
+        does not pay for it."""
+        with self._infer_lock:
+            blank = Image.new("RGB", (320, 320), "white")
+            self.detect(blank, "ja")  # the text detector's network runs even though a blank page has no boxes
+            if "ja" in src_langs:
+                self.manga(Image.new("RGB", (96, 96), "white"))
+            if "en" in src_langs:
+                self.reader.readtext(np.asarray(Image.new("RGB", (96, 96), "white")), detail=0)
 
     def detect(self, img: Image.Image, src_lang: str) -> list[Rect]:
         arr = np.asarray(img)
@@ -282,6 +296,10 @@ class OcrEngine:
 
     def read_region(self, img: Image.Image, bbox, src_lang: str):
         """OCR one reader-drawn region. Returns (text, conf, uncertain)."""
+        with self._infer_lock:
+            return self._read_region(img, bbox, src_lang)
+
+    def _read_region(self, img: Image.Image, bbox, src_lang: str):
         x, y, w, h = bbox
         pad = max(3, int(min(w, h) * 0.1))
         crop = img.crop((max(0, x - pad), max(0, y - pad), min(img.width, x + w + pad), min(img.height, y + h + pad)))
@@ -292,6 +310,10 @@ class OcrEngine:
 
     def run(self, img: Image.Image, src_lang: str, reading: str):
         """Returns (segments, timings). Segment bbox is [x, y, w, h] in image pixels."""
+        with self._infer_lock:
+            return self._run(img, src_lang, reading)
+
+    def _run(self, img: Image.Image, src_lang: str, reading: str):
         t0 = time.perf_counter()
         rects = self.detect(img, src_lang)
         groups = group_boxes(rects)

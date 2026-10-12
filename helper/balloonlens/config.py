@@ -21,10 +21,8 @@ LOG_PATH = DATA_DIR / "helper.log"
 # CLAUDE.md and settings are never read by the translation calls.
 CLAUDE_CONFIG_DIR = Path(os.environ.get("BALLOONLENS_CLAUDE_CONFIG_DIR", DATA_DIR / "claude-config"))
 CLAUDE_SANDBOX_DIR = DATA_DIR / "sandbox"
-CODEX_SANDBOX_DIR = DATA_DIR / "codex-sandbox"
 RUNTIME_DIR = DATA_DIR / "runtime"
 CLAUDE_EFFORT = os.environ.get("BALLOONLENS_CLAUDE_EFFORT", "low")
-CODEX_REASONING = os.environ.get("BALLOONLENS_CODEX_REASONING", "low")
 CLI_TIMEOUT_S = float(os.environ.get("BALLOONLENS_CLI_TIMEOUT", "150"))
 # How many subscription CLI calls run at once (images and chunks of one page share this). 1 = one at a time.
 CLI_PARALLEL = max(1, min(4, int(os.environ.get("BALLOONLENS_CLI_PARALLEL", "3"))))
@@ -50,13 +48,9 @@ OLLAMA_KEEP_ALIVE = os.environ.get("BALLOONLENS_KEEP_ALIVE", "15m")
 
 LOCAL_MODELS = ["translategemma:4b", "qwen3:8b", "qwen3.5:9b"]
 CLAUDE_MODEL = "claude-haiku-5-5"
-CODEX_MODEL = "gpt-6-luna"
-SUBSCRIPTION_MODELS = [CLAUDE_MODEL, CODEX_MODEL]
+SUBSCRIPTION_MODELS = [CLAUDE_MODEL]
 DEFAULT_MODEL = "qwen3.5:9b"  # helper-side default for API calls that omit a model
 SUPPORTED_MODELS = LOCAL_MODELS + SUBSCRIPTION_MODELS
-
-# Reader consent is tied to this text. Change it when what leaves the PC changes; old consent then stops working.
-CONSENT_VERSION = "2026-10-10-text-only-v2"
 
 # Request limits (section 14.1)
 MAX_IMAGE_BYTES = 25 * 1024 * 1024
@@ -104,20 +98,3 @@ def claude_command() -> list[str]:
     if found and found.lower().endswith(".exe"):
         return [found]
     return [str(Path.home() / ".local" / "bin" / "claude.exe")]
-
-
-def codex_command() -> list[str]:
-    """Codex native executable. The npm shims (.ps1/.cmd) are never used: they re-parse arguments through a shell."""
-    override = _command_from_env("BALLOONLENS_CODEX_COMMAND")
-    if override:
-        return override
-    appdata = os.environ.get("APPDATA")
-    if appdata:
-        native = (Path(appdata) / "npm" / "node_modules" / "@openai" / "codex" / "node_modules" / "@openai"
-                  / "codex-win32-x64" / "vendor" / "x86_64-pc-windows-msvc" / "bin" / "codex.exe")
-        if native.exists():
-            return [str(native)]
-    found = shutil.which("codex")
-    if found and found.lower().endswith(".exe"):
-        return [found]
-    return [str(native)] if appdata else ["codex"]

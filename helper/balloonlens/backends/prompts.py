@@ -1,7 +1,7 @@
 """Prompt text, the reply schema, payload shape and chunking for the subscription backends.
 
-The system prompt goes to the CLI as a file (Claude) or inline (Codex). The page data always goes
-through stdin as one JSON object, so manga text never lands on a command line.
+The system prompt goes to the CLI as a file. The page data always goes through stdin as one JSON
+object, so manga text never lands on a command line.
 """
 import json
 

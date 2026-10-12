@@ -4,7 +4,6 @@ import binascii
 import json
 import re
 import secrets
-import time
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Request
@@ -25,7 +24,7 @@ HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 KEY_RE = re.compile(r"^\d{1,6},\d{1,6},\d{1,6},\d{1,6}$")
 MAX_LINE_CHARS = 2000
 MAX_COORD = 30000
-SUBSCRIPTION_BACKENDS = ("claude", "codex")
+SUBSCRIPTION_BACKENDS = ("claude",)
 
 
 def check_box(box):
@@ -115,7 +114,7 @@ class LineIn(BaseModel):
     src: str
     tgt: str
     model: str = config.DEFAULT_MODEL
-    backend: Literal['claude', 'codex', 'ollama'] | None = None
+    backend: Literal['claude', 'ollama'] | None = None
     scope: str = ""
     fresh: bool = False
     options: PageOptions = Field(default_factory=PageOptions)
@@ -133,18 +132,13 @@ class EditIn(BaseModel):
     scope: str = Field(default='', max_length=200)
 
 
-class ConsentIn(BaseModel):
-    accept: bool = True
-    version: str = Field(default='', max_length=80)
-
-
 class CapsIn(BaseModel):
-    per_5h: int = Field(ge=1, le=10000)
-    per_7d: int = Field(ge=1, le=10000)
+    per_5h: int = Field(ge=0, le=10000)  # 0 with 0 = no self-imposed limit
+    per_7d: int = Field(ge=0, le=10000)
 
 
 class CalibrationIn(BaseModel):
-    backend: Literal['claude', 'codex']
+    backend: Literal['claude']
     percent: float = Field(ge=0, le=100)
 
 
@@ -154,7 +148,7 @@ def resolve_model(backend: str | None, model: str) -> str:
         return model
     if backend == 'ollama':
         return model if model in config.LOCAL_MODELS else config.DEFAULT_MODEL
-    return config.CLAUDE_MODEL if backend == 'claude' else config.CODEX_MODEL
+    return config.CLAUDE_MODEL
 
 
 def check_scope(scope: str) -> str:
@@ -235,7 +229,7 @@ def create_app(manager, token: str, port: int = config.PORT, tags=ollama_tags,
         models = []
         for m in config.SUPPORTED_MODELS:
             if m in config.SUBSCRIPTION_MODELS:
-                name = "claude" if m == config.CLAUDE_MODEL else "codex"
+                name = "claude"
                 models.append({"name": m, "installed": states.get(name) == "ready", "kind": "subscription"})
             else:
                 models.append({"name": m, "installed": installed is not None and m in installed, "kind": "local"})
@@ -254,7 +248,7 @@ def create_app(manager, token: str, port: int = config.PORT, tags=ollama_tags,
     @app.post("/v1/jobs")
     async def create_job(request: Request, src: str, tgt: str = "ko", model: str = config.DEFAULT_MODEL,
                          reading: str = "rtl", priority: int = 2, session: str = "", scope: str = "",
-                         backend: Literal['claude', 'codex', 'ollama'] | None = None):
+                         backend: Literal['claude', 'ollama'] | None = None):
         model = resolve_model(backend, model)
         check_pair(src, tgt, model)
         if reading not in READINGS or not 1 <= priority <= 4:
@@ -485,22 +479,6 @@ def create_app(manager, token: str, port: int = config.PORT, tags=ollama_tags,
             raise HTTPException(400, "bad_caps")
         return {"ok": True, "caps": r.quota.caps(name)}
 
-    @app.put("/v1/consents/{name}")
-    def accept_consent(name: str, body: ConsentIn):
-        r = require_backend(name)
-        if not body.accept:
-            raise HTTPException(400, "bad_params")
-        if body.version != config.CONSENT_VERSION:
-            raise HTTPException(409, "consent_version_mismatch")
-        manager.cache.put_consent(name, body.version, time.time())
-        return {"ok": True, "consent_current": r.consent_current(name)}
-
-    @app.delete("/v1/consents/{name}")
-    def revoke_consent(name: str):
-        require_backend(name)
-        manager.cache.delete_consent(name)
-        return {"ok": True}
-
     @app.get("/v1/usage")
     def usage():
         r = router()
@@ -517,21 +495,6 @@ def create_app(manager, token: str, port: int = config.PORT, tags=ollama_tags,
         except ValueError:
             raise HTTPException(400, "bad_percent")
         return {"ok": True, "estimate": r.quota.calibration_estimate(body.backend)}
-
-    @app.post("/v1/backends/codex/sandbox-check")
-    def codex_sandbox_check():
-        """Runs the Windows sandbox on two small files. No model call, so no consent and no usage are needed."""
-        r = require_backend("codex")
-        backend = r.backends["codex"]
-        try:
-            result = backend.local_sandbox_check(config.CODEX_SANDBOX_DIR, config.RUNTIME_DIR / "canary-outside-sandbox")
-        except OSError:
-            raise _backend_error("backend_error")
-        result["checked_at"] = time.time()
-        manager.cache.put_flags("codex", result)
-        backend.set_sandbox_result(result["verdict"])
-        r.status("codex", refresh=True)
-        return result
 
     @app.exception_handler(ImageTooLarge)
     async def too_large(_, exc):

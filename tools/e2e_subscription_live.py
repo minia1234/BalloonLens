@@ -1,11 +1,10 @@
 """Subscription path end to end: the real extension pages and service worker talk to a real helper process.
 
-The helper runs with fake claude and codex CLIs (no subscription use, no model calls, no Ollama). The extension is a
+The helper runs with a fake claude CLI (no subscription use, no model calls, no Ollama). The extension is a
 test copy that points at the helper's test port. Checks go through the extension's own message handlers and pages:
-  - the popup shows the Claude consent card; accepting it reaches the helper, and the card clears
-  - a line translated through the Claude path comes back; the usage cap blocks the next call
-  - Codex: consent, then the sandbox check (the fake sandbox reads profile files) leaves Codex unavailable
-  - the settings page shows both backend cards; revoking Claude consent there reaches the helper
+  - the popup shows Claude ready with no extra step; a line translated through the Claude path comes back
+  - the usage cap blocks the next call
+  - the settings page shows the Claude card as ready, with no consent button
   - no dialogue text in the helper's log or database
 Run:  python tools/e2e_subscription_live.py   (exit code 0 = every check passed)
 """
@@ -73,19 +72,16 @@ def wait_until(predicate, timeout=30.0, step=0.5):
 
 
 class Helper:
-    def __init__(self, data, claude_log, codex_log):
+    def __init__(self, data, claude_log):
         self.log_path = data / "live-helper.log"
-        env = {k: v for k, v in os.environ.items() if k not in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY")}
+        env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
         env.update({
             "BALLOONLENS_DATA": str(data),
             "BALLOONLENS_PORT": str(PORT),
             "BALLOONLENS_CLAUDE_CONFIG_DIR": str(data / "claude-config"),
             "BALLOONLENS_CLAUDE_COMMAND": json.dumps([sys.executable, str(FIXTURES / "fake_claude.py"),
                                                       "--mode", "ok", "--log", str(claude_log)]),
-            "BALLOONLENS_CODEX_COMMAND": json.dumps([sys.executable, str(FIXTURES / "fake_codex.py"),
-                                                     "--mode", "sandbox_readable", "--log", str(codex_log)]),
             "ANTHROPIC_API_KEY": "sk-ant-api03-LIVELEAKCHECK",
-            "OPENAI_API_KEY": "sk-LIVELEAKCHECK",
         })
         self.out = open(self.log_path, "a", encoding="utf-8")
         self.proc = subprocess.Popen([sys.executable, "-m", "balloonlens"], cwd=str(HELPER), env=env,
@@ -131,7 +127,7 @@ def main():
     out.mkdir(parents=True)
     data = out / "data"
     data.mkdir()
-    claude_log, codex_log = out / "claude-calls.jsonl", out / "codex-calls.jsonl"
+    claude_log = out / "claude-calls.jsonl"
     ext = out / "extension"
     shutil.copytree(ROOT / "extension", ext)
     # The test copy talks to the test helper port; the manifest key (and so the extension ID) stays the same.
@@ -141,7 +137,7 @@ def main():
     errors = []
     helper = None
     try:
-        helper = Helper(data, claude_log, codex_log)
+        helper = Helper(data, claude_log)
         with sync_playwright() as p:
             exe = None
             if not Path(p.chromium.executable_path).exists():
@@ -156,16 +152,8 @@ def main():
             popup = ctx.new_page()
             popup.on("pageerror", lambda e: errors.append(f"popup: {e}"))
             popup.goto(f"{ORIGIN}/popup.html?tabId=1&url=https%3A%2F%2Fexample.test%2Fmanga")
-            popup.wait_for_selector("#consentBox:not([hidden])", timeout=30000)
-            check("Claude shows the consent card before any call", popup.is_visible("#consentBox"))
-            check("the card lists four disclosure lines", popup.locator("#consentList li").count() == 4)
-
-            popup.click("#consentAccept")
-            check("accepting reaches the helper",
-                  wait_until(lambda: backend_row(helper, "claude").get("consent", {}).get("current") is True),
-                  str(backend_row(helper, "claude").get("consent")))
-            check("the popup then shows Claude ready", wait_until(lambda: "준비됨" in popup.inner_text("#conn"), 20),
-                  popup.inner_text("#conn"))
+            check("the popup shows Claude ready without a consent step",
+                  wait_until(lambda: "준비됨" in popup.inner_text("#conn"), 30), popup.inner_text("#conn"))
 
             line = sw.evaluate("""async () => await handlers.translateLine({text: '待って！', src: 'ja', tgt: 'ko',
                 model: 'claude-haiku-5-5', scope: '', fresh: true, options: {}, page: []})""")
@@ -186,46 +174,14 @@ def main():
             check("no process starts while capped", len(log_rows(claude_log)) == 1)
             helper.put("/v1/backends/claude/caps", {"per_5h": 20, "per_7d": 150})
 
-            popup.click('[data-field="model"] [data-value="gpt-6-luna"]')
-            popup.wait_for_selector("#consentBox:not([hidden])", timeout=30000)
-            check("Codex asks for its own consent first", popup.is_visible("#consentBox"))
-            popup.click("#consentAccept")
-            check("Codex consent reaches the helper",
-                  wait_until(lambda: backend_row(helper, "codex").get("consent", {}).get("current") is True))
-            check("before the sandbox check Codex says so", wait_until(lambda: "보안 점검" in popup.inner_text("#conn"), 20),
-                  popup.inner_text("#conn"))
-
-            verdict = sw.evaluate("async () => await handlers.sandboxCheck()")
-            check("the sandbox check fails when the sandbox reads profile files",
-                  verdict.get("passed") is False and verdict.get("verdict") == "file_readable", str(verdict))
-            check("the popup then shows Codex unavailable",
-                  wait_until(lambda: "사용 불가" in popup.inner_text("#conn"), 25), popup.inner_text("#conn"))
-            codex_before = len(log_rows(codex_log))
-            refused = sw.evaluate("""async () => await handlers.translateLine({text: '待って！', src: 'ja', tgt: 'ko',
-                model: 'gpt-6-luna', scope: '', fresh: true, options: {}, page: []})""")
-            check("Codex refuses to translate after a failed check", refused.get("error") == "sandbox_failed", str(refused))
-            check("no Codex translation process started", len(log_rows(codex_log)) == codex_before)
-            check("the notice offers the local model", popup.inner_text("#noticeBtn") == "로컬로 쓰기",
-                  popup.inner_text("#noticeBtn"))
-            popup.click("#noticeBtn")
-            check("the notice button switches the saved model to the local one",
-                  wait_until(lambda: sw.evaluate("async () => (await chrome.storage.local.get('model')).model")
-                             == "qwen3.5:9b", 20))
-            popup.screenshot(path=str(out / "popup-codex-unavailable.png"), full_page=True)
-
             options = ctx.new_page()
             options.on("pageerror", lambda e: errors.append(f"options: {e}"))
             options.goto(f"{ORIGIN}/options.html")
             options.wait_for_selector("#models .backend-card", timeout=30000)
             cards = options.locator("#models .backend-card")
-            check("settings shows one card per subscription", cards.count() == 2, str(cards.count()))
+            check("settings shows the Claude card", cards.count() == 1, str(cards.count()))
             check("the Claude card says ready", "준비됨" in cards.nth(0).inner_text(), cards.nth(0).inner_text()[:120])
-            check("the Codex card says unavailable", "사용 불가" in cards.nth(1).inner_text(), cards.nth(1).inner_text()[:120])
-            cards.nth(0).get_by_role("button", name="동의 철회").click()
-            check("revoking Claude consent in settings reaches the helper",
-                  wait_until(lambda: backend_row(helper, "claude").get("consent", {}).get("current") is False))
-            check("the Claude card then offers consent again",
-                  wait_until(lambda: "사용에 동의" in options.locator("#models .backend-card").nth(0).inner_text(), 20))
+            check("the Claude card has no consent button", cards.nth(0).get_by_role("button", name="사용에 동의").count() == 0)
             options.screenshot(path=str(out / "options-subscriptions.png"), full_page=True)
             ctx.close()
     finally:

@@ -36,21 +36,17 @@ def test_endpoint_cloud_and_key_variables_never_reach_the_cli():
         "PATH": "C:\\bin", "SystemRoot": "C:\\Windows", "HTTPS_PROXY": "http://proxy:8080",
         "ANTHROPIC_API_KEY": "sk-ant-x", "ANTHROPIC_AUTH_TOKEN": "t", "ANTHROPIC_BASE_URL": "https://evil.example",
         "CLAUDE_CODE_USE_BEDROCK": "1", "CLAUDE_CODE_USE_VERTEX": "1", "AWS_ACCESS_KEY_ID": "AKIA",
-        "AWS_PROFILE": "p", "GOOGLE_APPLICATION_CREDENTIALS": "c.json", "OPENAI_API_KEY": "sk",
-        "OPENAI_BASE_URL": "https://evil.example", "CODEX_API_KEY": "k",
+        "AWS_PROFILE": "p", "GOOGLE_APPLICATION_CREDENTIALS": "c.json",
     }
     env = clean_env(host_env, {"CLAUDE_CONFIG_DIR": "D:\\cfg"})
     assert set(env) == {"PATH", "SystemRoot", "HTTPS_PROXY", "CLAUDE_CONFIG_DIR"}
 
 
-def test_two_backends_never_share_cached_lines(tmp_path):
+def test_a_cached_line_is_reused_by_the_same_backend(tmp_path):
     cache = Cache(tmp_path / "c.db")
     claude = Replying("claude", "claude-cli")
-    codex = Replying("codex", "codex-cli")
     lines = [(1, "待って")]
     CliTranslator(claude, cache).translate_page(lines, "ja", "ko", "claude-haiku-5-5", "scope", noop)
-    other = CliTranslator(codex, cache).translate_page(lines, "ja", "ko", "gpt-6-luna", "scope", noop)
-    assert other["cache_hits"] == 0 and codex.calls == 1
     again = CliTranslator(claude, cache).translate_page(lines, "ja", "ko", "claude-haiku-5-5", "scope", noop)
     assert again["cache_hits"] == 1 and claude.calls == 1
 

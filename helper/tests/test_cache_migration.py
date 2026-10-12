@@ -14,7 +14,6 @@ def test_v04_database_opens_keeps_its_rows_and_gains_the_new_tables(tmp_path):
 
     cache = Cache(path)
     assert cache.get_tr("k") == "번역"
-    assert cache.get_consent("claude") is None
     assert cache.get_caps("claude") is None
     assert cache.get_pause("claude") is None
     assert cache.usage_summary("claude", since_7d=0, since_5h=0, since_today=0)["calls_7d"] == 0

@@ -35,7 +35,6 @@ function Get-LocalDataDirs([string]$DataDir) {
     return @(
         (Join-Path $DataDir 'claude-config'),
         (Join-Path $DataDir 'sandbox'),
-        (Join-Path $DataDir 'codex-sandbox'),
         (Join-Path $DataDir 'runtime')
     )
 }
@@ -95,14 +94,6 @@ function Find-Claude {
     if (Test-Path -LiteralPath $local) { return $local }
 }
 
-# The npm shims (.ps1/.cmd) re-parse arguments through a shell, so the native executable is preferred.
-function Find-Codex {
-    $native = Join-Path $env:APPDATA 'npm\node_modules\@openai\codex\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\bin\codex.exe'
-    if (Test-Path -LiteralPath $native) { return $native }
-    $command = Get-Command codex.exe -ErrorAction SilentlyContinue
-    if ($command) { return $command.Source }
-}
-
 # Reads the CLI's own status. Never calls a model, so it uses no subscription usage.
 function Get-ClaudeReport([string]$Path) {
     $report = [pscustomobject]@{ installed = $false; version = ''; versionOk = $false; loggedIn = $false; note = '' }
@@ -128,19 +119,6 @@ function Get-ClaudeReport([string]$Path) {
     return $report
 }
 
-function Get-CodexReport([string]$Path) {
-    $report = [pscustomobject]@{ installed = $false; loggedIn = $false; note = '' }
-    if (-not $Path) {
-        $report.note = 'Codex CLI가 없어요. 설치: npm install -g @openai/codex'
-        return $report
-    }
-    $report.installed = $true
-    $ErrorActionPreference = 'Continue'
-    & $Path login status *> $null  # the CLI prints straight to the console; the exit code is what matters
-    $report.loggedIn = ($LASTEXITCODE -eq 0)
-    return $report
-}
-
 function Get-HelperStatus([string]$Url) {
     $pair = $null
     try {
@@ -149,12 +127,10 @@ function Get-HelperStatus([string]$Url) {
     } catch { return $null } finally { $pair = $null }
 }
 
-function Write-BackendReport($Claude, $Codex) {
+function Write-BackendReport($Claude) {
     if (-not $Claude.installed) { Write-Host "[!] $($Claude.note)" -ForegroundColor Yellow }
     elseif (-not $Claude.versionOk) { Write-Host "[!] Claude Code 2.1.268 이상이 필요해요. 지금: $($Claude.version)" -ForegroundColor Yellow }
     else { Write-Host "[ok] Claude Code $($Claude.version) · 로그인 $(if ($Claude.loggedIn) { '됨' } else { '필요' })" }
-    if (-not $Codex.installed) { Write-Host "[!] $($Codex.note)" -ForegroundColor Yellow }
-    else { Write-Host "[ok] Codex CLI · 로그인 $(if ($Codex.loggedIn) { '됨' } else { '필요' })" }
 }
 
 # Progress lines for the setup window (tools/setup_gui.py reads "[step i/n] ..."). They show what is happening now.
@@ -171,7 +147,7 @@ function Start-BalloonLensSetup {
     if ($CheckOnly) {
         if (-not (Test-Dependencies $python)) { throw 'Python dependencies are missing or outdated. Run Setup.cmd.' }
         Write-Host '[ok] Python dependencies available.'
-        Write-BackendReport (Get-ClaudeReport (Find-Claude)) (Get-CodexReport (Find-Codex))
+        Write-BackendReport (Get-ClaudeReport (Find-Claude))
         Write-Host "[i] Ollama (로컬 모델, 선택 사항): $(if (Find-Ollama) { '설치됨' } else { '없음' })"
         Write-Host '[ok] Check-only made no installation changes.'
         return
@@ -241,8 +217,8 @@ function Start-BalloonLensSetup {
             throw "도우미가 $url 에서 켜지지 않았어요. %LOCALAPPDATA%\BalloonLens\helper.log 를 확인하세요."
         }
     }
-    Write-Step 5 6 'Claude·Codex 상태 확인'
-    Write-BackendReport (Get-ClaudeReport (Find-Claude)) (Get-CodexReport (Find-Codex))
+    Write-Step 5 6 'Claude 상태 확인'
+    Write-BackendReport (Get-ClaudeReport (Find-Claude))
     Write-Step 6 6 '끝'
     Write-Host "[ok] Setup complete. Chrome > Extensions > Developer mode > Load unpacked: $(Join-Path $root 'extension')"
     Write-Host '구독 번역: 확장의 설정 화면에서 로그인 명령을 복사해 PowerShell에 붙여 넣으세요. 이 스크립트는 로그인하지 않아요.'
@@ -275,9 +251,7 @@ function Get-StatusReport {
         portOwner = Get-PortOwner ([int]$port)
         ollama = [bool](Find-Ollama)
         claudePath = Find-Claude
-        codexPath = Find-Codex
         claude = Get-ClaudeReport (Find-Claude)
-        codex = Get-CodexReport (Find-Codex)
     } | ConvertTo-Json -Depth 4
 }
 

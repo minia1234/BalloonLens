@@ -1,11 +1,11 @@
 """Translation benchmark across backends (plan §17.1): OCR once per image, then each backend.
 
 python -m balloonlens.bench <images...|dir> --src ja --backends local:translategemma:4b,local:qwen3:8b
-python -m balloonlens.bench <images...|dir> --backends claude,codex --live
+python -m balloonlens.bench <images...|dir> --backends claude --live
 
   local:<model>   Ollama model. Reports the cold load time and the VRAM peak.
-  claude, codex   Subscription CLI backends. They spend subscription usage, so they run only with --live.
-                  Token counts come from the CLI's own usage report. Codex runs only after its sandbox check passed.
+  claude          Subscription CLI backend. It spends subscription usage, so it runs only with --live.
+                  Token counts come from the CLI's own usage report.
 
 Optional ground truth next to each image: <name>.truth.json  {"src", "reading", "lines": [...]}
 Report contains dialogue text and stays on this PC.
@@ -22,13 +22,13 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 from . import config
-from .backends import ClaudeCodeBackend, CliTranslator, CodexBackend, QuotaPolicy
+from .backends import ClaudeCodeBackend, CliTranslator, QuotaPolicy
 from .cache import Cache
 from .ocr import OcrEngine, decode_image
 from .translate import Translator, ollama_unload
 
 FONT = "C:/Windows/Fonts/malgun.ttf"
-SUBSCRIPTION = {"claude": config.CLAUDE_MODEL, "codex": config.CODEX_MODEL}
+SUBSCRIPTION = {"claude": config.CLAUDE_MODEL}
 
 
 class VramSampler:
@@ -109,26 +109,16 @@ def parse_backends(text: str) -> list[tuple[str, str | None]]:
         elif item in SUBSCRIPTION:
             specs.append((item, None))
         else:
-            raise ValueError(f"unknown backend: {item} (use local:<model>, claude or codex)")
+            raise ValueError(f"unknown backend: {item} (use local:<model> or claude)")
     return specs
 
 
 def subscription_translator(name: str, cache: Cache) -> CliTranslator:
     """The same backend objects the helper builds (see __main__.build_router), with the bench's own usage ledger."""
     quota = QuotaPolicy(cache)
-    if name == "claude":
-        backend = ClaudeCodeBackend(command=config.claude_command(), config_dir=config.CLAUDE_CONFIG_DIR,
-                                    sandbox_dir=config.CLAUDE_SANDBOX_DIR, runtime_dir=config.RUNTIME_DIR,
-                                    model=config.CLAUDE_MODEL, effort=config.CLAUDE_EFFORT, timeout=config.CLI_TIMEOUT_S)
-    else:
-        # Read the real sandbox verdict: the bench never runs Codex on a machine where its sandbox failed the check.
-        verdict = Cache(config.DB_PATH).get_flags("codex").get("verdict", "")
-        if verdict != "read_blocked":
-            raise SystemExit("Codex needs a passing sandbox check first (설정 화면의 보안 점검).")
-        backend = CodexBackend(command=config.codex_command(), sandbox_dir=config.CODEX_SANDBOX_DIR,
-                               runtime_dir=config.RUNTIME_DIR, model=config.CODEX_MODEL,
-                               reasoning=config.CODEX_REASONING, timeout=config.CLI_TIMEOUT_S,
-                               sandbox_verdict=verdict)
+    backend = ClaudeCodeBackend(command=config.claude_command(), config_dir=config.CLAUDE_CONFIG_DIR,
+                                sandbox_dir=config.CLAUDE_SANDBOX_DIR, runtime_dir=config.RUNTIME_DIR,
+                                model=config.CLAUDE_MODEL, effort=config.CLAUDE_EFFORT, timeout=config.CLI_TIMEOUT_S)
     return CliTranslator(backend, cache, quota)
 
 
@@ -139,12 +129,12 @@ def main():
     ap.add_argument("--tgt", default="ko")
     ap.add_argument("--reading", default=None, help="rtl|ltr|ttb (default: from truth file or rtl)")
     ap.add_argument("--backends", default="local:translategemma:4b,local:qwen3:8b")
-    ap.add_argument("--live", action="store_true", help="allow claude and codex (they spend subscription usage)")
+    ap.add_argument("--live", action="store_true", help="allow claude (it spends subscription usage)")
     ap.add_argument("--out", default="bench_out")
     args = ap.parse_args()
     specs = parse_backends(args.backends)
     if any(kind in SUBSCRIPTION for kind, _ in specs) and not args.live:
-        sys.exit("claude and codex spend subscription usage. Add --live to run them.")
+        sys.exit("claude spends subscription usage. Add --live to run it.")
 
     paths = []
     for inp in map(Path, args.inputs):

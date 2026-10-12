@@ -44,12 +44,11 @@ def test_parse_status_refuses_output_without_json():
 
 def test_status_rows_mark_a_logged_out_claude_as_a_warning_with_the_login_hint():
     status = {"deps": True, "nativeHost": True, "helper": False, "ollama": False,
-              "claude": {"installed": True, "version": "2.1.285 (Claude Code)", "versionOk": True, "loggedIn": False},
-              "codex": {"installed": True, "loggedIn": True}}
+              "claude": {"installed": True, "version": "2.1.285 (Claude Code)", "versionOk": True, "loggedIn": False}}
     rows = {name: (text, state) for name, text, state in setup_gui.status_rows(status)}
     text, state = rows["Claude Code"]
     assert state == "warn" and "로그인 필요" in text
-    assert rows["Codex CLI"][1] == "ok"
+    assert "Codex CLI" not in rows
     assert rows["도우미"][1] == "off"
     assert rows["크롬 확장"][1] == "warn"
 
@@ -62,11 +61,10 @@ def test_a_port_taken_by_another_program_is_a_warning_on_the_helper_row():
 
 def test_status_rows_are_all_ok_when_everything_is_ready():
     status = {"deps": True, "nativeHost": True, "helper": True, "ollama": True,
-              "claude": {"installed": True, "version": "2.1.285 (Claude Code)", "versionOk": True, "loggedIn": True},
-              "codex": {"installed": True, "loggedIn": True}}
+              "claude": {"installed": True, "version": "2.1.285 (Claude Code)", "versionOk": True, "loggedIn": True}}
     states = {name: state for name, _, state in setup_gui.status_rows(status)}
     assert states["번역 환경 (Python 패키지)"] == "ok"
-    assert states["Claude Code"] == "ok" and states["Codex CLI"] == "ok"
+    assert states["Claude Code"] == "ok"
     assert states["Ollama (선택 사항)"] == "ok"
     assert states["크롬 확장"] == "warn"  # no Chrome profile entry in this status
 
@@ -80,15 +78,9 @@ def test_claude_login_quotes_the_config_folder_for_powershell():
     assert "claude.exe" in script
 
 
-def test_codex_login_runs_the_login_subcommand():
-    args = setup_gui.codex_login_args(r"C:\npm\codex.exe")
-    assert args[-1] == "& 'C:\\npm\\codex.exe' login"
-
-
 def test_diagnostics_hold_states_and_paths_but_no_tokens_or_dialogue():
     status = {"root": "C:/BL", "dataDir": "C:/BL-data", "deps": True, "nativeHost": False, "helper": True,
-              "ollama": False, "claude": {"installed": True, "version": "2.1.285", "loggedIn": True},
-              "codex": {"installed": False, "loggedIn": False}}
+              "ollama": False, "claude": {"installed": True, "version": "2.1.285", "loggedIn": True}}
     text = setup_gui.diagnostics_text(status, "0.5.0")
     assert "0.5.0" in text and "C:/BL-data" in text
     assert "Claude Code: 2.1.285 · 로그인 됨" in text

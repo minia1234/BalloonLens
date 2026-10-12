@@ -33,6 +33,7 @@
         onMessage: { addListener: (fn) => listeners.push(fn) },
         async sendMessage(msg) {
           const ok = (data) => ({ ok: true, data });
+          (window.__msgs ||= []).push(msg.type + (msg.jobId ? ` ${msg.jobId}` : "")); // for checks: what the page asked
           switch (msg.type) {
             case "translateImage": {
               const file = decodeURIComponent(msg.url.split("/").pop());

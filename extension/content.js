@@ -7,10 +7,10 @@
 
   const MIN_NATURAL = 250;
   const MIN_DISPLAY = 150;
-  const POLL_MS = 500;
+  const POLL_MS = 250; // how often the page asks the helper for its jobs (each answer can add a new line of text)
   const MAX_SUBMITS = 3;
   const FINISHED = new Set(["done", "partial", "failed", "cancelled"]);
-  const MODEL_NAMES = { "translategemma:4b": "TranslateGemma", "qwen3:8b": "Qwen3", "qwen3.5:9b": "Qwen3.5", "claude-haiku-5-5": "Claude", "gpt-6-luna": "Codex" };
+  const MODEL_NAMES = { "translategemma:4b": "TranslateGemma", "qwen3:8b": "Qwen3", "qwen3.5:9b": "Qwen3.5", "claude-haiku-5-5": "Claude" };
   const explain = (code) => BalloonLensReading.explainCode(code);
   const svg = (d) =>
     `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
@@ -410,11 +410,25 @@
 
   window.addEventListener("pagehide", () => mounted && send("cancelSession", { session }).catch(() => {}));
 
+  // More than one screen away from the window in any direction (a page the reader has passed or not reached yet).
+  function farFromScreen(img) {
+    const r = img.getBoundingClientRect();
+    return r.bottom < -innerHeight || r.top > 2 * innerHeight || r.right < -innerWidth || r.left > 2 * innerWidth;
+  }
+
+  // Is this image on screen right now? Pages the reader has turned past stay translated (the cache keeps them), but
+  // the counts show only what is in front of the reader.
+  function onScreen(e) {
+    const b = anchorBox(e.anchor);
+    return !!b && b.left < innerWidth && b.left + b.width > 0 && b.top < innerHeight && b.top + b.height > 0;
+  }
+
   function status() {
     let done = 0, pending = 0, failed = 0, edited = 0, jobsActive = 0, review = 0, overflow = 0, failedJobs = 0;
     for (const e of entries) {
       if (e.status==='failed' && !e.segs.size) failedJobs++;
       if (e.jobId && !FINISHED.has(e.status)) jobsActive++;
+      if (!onScreen(e)) continue;
       e.segs.forEach((el) => {
         const st = el.dataset.status;
         if (st === "done" || (st === "review" && el.dataset.hasText === '1')) done++;
@@ -1057,7 +1071,7 @@
     if (!base) return;
     const v = segView(e, base);
     const snap = e.lastSnap;
-    const otherModel = ["qwen3.5:9b", "claude-haiku-5-5", "gpt-6-luna"].find((m) => m !== settings.model) || "qwen3.5:9b";
+    const otherModel = ["qwen3.5:9b", "claude-haiku-5-5"].find((m) => m !== settings.model) || "qwen3.5:9b";
     const ocrSrc = base.ocr_src ?? base.src;
 
     const pop = document.createElement("div");
@@ -1550,7 +1564,11 @@
         href = location.href; // SPA navigation: drop results for the previous screen
         restart();
       }
-      for (const [img, rec] of images) if (!img.isConnected) dropRecord(img, rec);
+      // A page the reader has scrolled a screen away from stops its unfinished work. Its finished translation stays
+      // (the helper cache), so coming back shows it at once without a new call.
+      for (const [img, rec] of images) {
+        if (!img.isConnected || (rec.main && !FINISHED.has(rec.main.status) && farFromScreen(img))) dropRecord(img, rec);
+      }
       entries.forEach(place);
       await captureTick();
       updatePill();

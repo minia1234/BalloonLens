@@ -24,7 +24,6 @@ token.txt
 auth.json
 .credentials.json
 claude-config/
-codex-sandbox/
 
 # Personal material (real manga pages are not part of the project)
 samples/real/

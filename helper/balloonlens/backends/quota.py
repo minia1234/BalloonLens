@@ -8,7 +8,7 @@ import time
 
 from .base import BackendError
 
-DEFAULT_CAPS = {"claude": {"per_5h": 20, "per_7d": 150}, "codex": {"per_5h": 20, "per_7d": 150}}
+DEFAULT_CAPS = {"claude": {"per_5h": 20, "per_7d": 150}}
 WINDOW_5H = 5 * 3600
 WINDOW_7D = 7 * 86400
 DEFAULT_PAUSE_S = 1800
@@ -39,6 +39,9 @@ class QuotaPolicy:
         return dict(stored) if stored else dict(DEFAULT_CAPS[name])
 
     def set_caps(self, name: str, per_5h: int, per_7d: int):
+        if (per_5h, per_7d) == (0, 0):  # both 0: no self-imposed limit; the official usage limit still stops calls
+            self.cache.put_caps(name, 0, 0)
+            return
         for value in (per_5h, per_7d):
             if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= MAX_CAP:
                 raise ValueError("bad_caps")
@@ -91,6 +94,8 @@ class QuotaPolicy:
             raise BackendError("quota_paused", pause["reason"], retry_after=pause["retry_in_s"])
         now = self.clock()
         caps = self.caps(name)
+        if caps["per_5h"] == 0 and caps["per_7d"] == 0:  # no self-imposed limit
+            return
         for window, limit, label in ((WINDOW_5H, caps["per_5h"], "5시간"), (WINDOW_7D, caps["per_7d"], "7일")):
             if self.cache.count_usage(name, now - window) + pending >= limit:
                 oldest = self.cache.oldest_usage(name, now - window)
