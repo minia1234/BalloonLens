@@ -546,11 +546,13 @@
       if (!key || !eligible(img)) continue;
       const r = img.getBoundingClientRect();
       const rec = images.get(img);
-      items.push({ img, top: r.top, bottom: r.bottom, queued: !!rec && rec.key === key });
+      items.push({ img, top: r.top, bottom: r.bottom, left: r.left, right: r.right, queued: !!rec && rec.key === key });
     }
     const busy = [...images.values()].some(rec =>
       rec.main && rec.main.priority === 3 && alive(rec.main) && !FINISHED.has(rec.main.status));
-    for (const step of BalloonLensReading.planReadAhead(items, innerHeight, busy)) ensure(step.item.img, step.priority);
+    for (const step of BalloonLensReading.planReadAhead(items, innerWidth, innerHeight, busy, settings.reading)) {
+      ensure(step.item.img, step.priority);
+    }
   }
 
   const mutationObs = new MutationObserver((records) => {

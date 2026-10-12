@@ -225,15 +225,27 @@
     }
     return {settings, works, skipped: Object.keys(s).filter(k => !(k in settings) && k !== 'reviewAll')};
   }
-  // Subscription models pay per image (plan §8), so the page queue reads ahead by one image: every image on screen,
-  // plus the image right below the screen. If that one is already queued, the read-ahead is done.
-  function planReadAhead(items, viewportHeight, readAheadBusy) {
+  // Subscription models pay per image (plan §8), so the page queue reads ahead by one image: every image on screen
+  // (in both directions: a horizontal viewer shows several pages side by side), plus the nearest image that comes
+  // next in the reading direction. If that one is already queued, the read-ahead is done.
+  // "Next" is the image below a vertical page, or to the left (rtl) / right (ltr) of a horizontal one.
+  function isNextImage(item, viewportWidth, viewportHeight, reading) {
+    const sharesColumn = item.left < viewportWidth && item.right > 0;
+    if (sharesColumn && item.top >= viewportHeight) return true;
+    if (reading === 'rtl') return item.right <= 0;
+    if (reading === 'ltr') return item.left >= viewportWidth;
+    return false;
+  }
+  function planReadAhead(items, viewportWidth, viewportHeight, readAheadBusy, reading = 'ttb') {
     const plan = [];
-    let next = null;
+    let next = null, nextGap = Infinity;
     for (const item of items) {
-      if (item.bottom > 0 && item.top < viewportHeight) {
+      if (item.bottom > 0 && item.top < viewportHeight && item.right > 0 && item.left < viewportWidth) {
         if (!item.queued) plan.push({item, priority: 2});
-      } else if (item.top >= viewportHeight && (!next || item.top < next.top)) next = item;
+      } else if (isNextImage(item, viewportWidth, viewportHeight, reading)) {
+        const gap = Math.max(item.top - viewportHeight, item.left - viewportWidth, -item.bottom, -item.right);
+        if (gap < nextGap) { next = item; nextGap = gap; }
+      }
     }
     if (next && !next.queued && !readAheadBusy) plan.push({item: next, priority: 3});
     return plan;

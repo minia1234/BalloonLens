@@ -73,7 +73,7 @@ class JobManager:
         self._thread = None
         # Subscription jobs run side by side (their CLI calls are the slow part). OCR is one-at-a-time on the GPU.
         self._ocr_lock = threading.Lock()
-        self._cli_limit = config.CLI_PARALLEL
+        self._cli_limit = config.CLI_JOB_SLOTS
         self._cli_active = 0
         self._cli_pool = None
 

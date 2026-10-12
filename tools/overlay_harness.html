@@ -12,6 +12,8 @@
     .page { display: flex; flex-direction: column; align-items: center; gap: 40px; padding: 40px 0 400px; }
     img { display: block; }
     #narrow img { width: 520px; }
+    /* ?row=1: pages side by side in one row, wider than the window (a horizontal viewer). */
+    .page.row { flex-direction: row; align-items: flex-start; width: max-content; padding: 40px 40px 400px; gap: 40px; }
   </style>
 </head>
 <body>
@@ -19,6 +21,7 @@
   <script>
     const params = new URLSearchParams(location.search);
     const model = params.get("model") || "translategemma:4b";
+    if (params.has("row")) document.getElementById("pages").classList.add("row");
     // ?timers=1: animation frames run as timers, for a window that is hidden (rAF stops in a hidden page).
     if (params.has("timers")) window.requestAnimationFrame = (fn) => setTimeout(() => fn(performance.now()), 16);
     const listeners = [];
@@ -68,12 +71,13 @@
       }
       // reading.js first, as the extension injects it: content.js reads BalloonLensReading at run time.
       const reading = document.createElement("script");
-      reading.src = "/extension/reading.js";
+      const bust = `?v=${params.get("v") || "0"}`; // the browser caches the scripts; a new v loads the current ones
+      reading.src = `/extension/reading.js${bust}`;
       reading.onload = () => {
         const s = document.createElement("script");
-        s.src = "/extension/content.js";
+        s.src = `/extension/content.js${bust}`;
         s.onload = () => {
-          const settings = { src: "ja", tgt: "ko", model, reading: "rtl", fontScale: 1, bgOpacity: 0.92, showSource: params.has("src") };
+          const settings = { src: "ja", tgt: "ko", model, reading: params.get("reading") || "rtl", fontScale: 1, bgOpacity: 0.92, showSource: params.has("src") };
           listeners.forEach((fn) => fn({ type: "bl:start", tabId: 1, settings }, {}, () => {}));
         };
         document.body.appendChild(s);

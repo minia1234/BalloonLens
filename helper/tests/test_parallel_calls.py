@@ -150,6 +150,28 @@ def wait_job(client, job_id):
     raise AssertionError("job did not finish")
 
 
+def test_a_second_image_is_read_while_the_first_is_still_translating(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "CLI_PARALLEL", 1)  # one call at a time: the first image holds the only call slot
+    cache = Cache(tmp_path / "c.db")
+    quota = QuotaPolicy(cache)
+    backend = Busy(hold=1.0)
+    translator = CliTranslator(backend, cache, quota, parallel=1)  # one call at a time, so the first one blocks
+    router = Router(local=NoLocal(), cli={"claude": translator}, backends={"claude": backend}, quota=quota, cache=cache)
+    manager = JobManager(PerImageOcr(), NoLocal(), cache, decode_image, router=router)
+    manager.start()
+    client = TestClient(create_app(manager, TOKEN, port=8787, tags=lambda: ["qwen3.5:9b"], extension_ids={EXT}))
+    client.put("/v1/consents/claude", json={"accept": True, "version": config.CONSENT_VERSION}, headers=AUTH)
+    first = client.post(f"/v1/jobs?src=ja&tgt=ko&model={CLAUDE}", content=png_with(0), headers=AUTH).json()["id"]
+    for _ in range(200):
+        if backend.active == 1:
+            break
+        time.sleep(0.01)
+    second = client.post(f"/v1/jobs?src=ja&tgt=ko&model={CLAUDE}", content=png_with(1), headers=AUTH).json()["id"]
+    # The second image starts reading at once; it does not queue behind the first image's translation call.
+    assert wait_job(client, second)["timings"]["queue_ms"] < 500
+    assert wait_job(client, first)["status"] == "done"
+
+
 def test_subscription_jobs_for_several_images_run_at_once(helper):
     client, backend = helper
     client.put("/v1/consents/claude", json={"accept": True, "version": config.CONSENT_VERSION}, headers=AUTH)

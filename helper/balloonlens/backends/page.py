@@ -173,7 +173,9 @@ class CliTranslator:
         terms = validate.glossary_terms(glossary)
         term_dicts = [{"source": s, "target": t} for s, t in terms]
         casual = "반말" in instructions and "존댓말" not in instructions
-        reference = {"page": page, "context": context, "fixed": sorted(fixed.items()),
+        # The lines translated before this page are not part of the key: the same lines must reuse their translation
+        # when the reader comes back and the earlier pages differ (D58). Context still reaches the prompt below.
+        reference = {"page": page, "fixed": sorted(fixed.items()),
                      "instructions": instructions, "glossary": glossary, "notes": notes,
                      "uncertain": sorted(uncertain), "review": review}
         signature = digest(json.dumps(reference, ensure_ascii=False, sort_keys=True, default=str))

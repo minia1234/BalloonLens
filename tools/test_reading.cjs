@@ -136,13 +136,23 @@ test('short translation does not inflate beyond estimated original font',()=>{
 
 test('subscription read-ahead queues what is on screen and one image below, and no second one while busy', () => {
   const {planReadAhead} = require('../extension/reading.js');
-  const item = (id, top, bottom, extra = {}) => ({id, top, bottom, queued: false, ...extra});
+  const item = (id, top, bottom, extra = {}) => ({id, top, bottom, left: 0, right: 500, queued: false, ...extra});
   const ids = (plan) => plan.map(p => [p.item.id, p.priority]);
   const items = [item('above', -900, -100), item('visible', 50, 700), item('next', 800, 1500), item('later', 1600, 2300)];
-  assert.deepEqual(ids(planReadAhead(items, 800, false)), [['visible', 2], ['next', 3]]);
-  assert.deepEqual(ids(planReadAhead(items, 800, true)), [['visible', 2]]);
+  assert.deepEqual(ids(planReadAhead(items, 500, 800, false)), [['visible', 2], ['next', 3]]);
+  assert.deepEqual(ids(planReadAhead(items, 500, 800, true)), [['visible', 2]]);
   const queued = [item('visible', 50, 700, {queued: true}), item('next', 800, 1500)];
-  assert.deepEqual(ids(planReadAhead(queued, 800, false)), [['next', 3]]);
+  assert.deepEqual(ids(planReadAhead(queued, 500, 800, false)), [['next', 3]]);
   const done = [item('visible', 50, 700), item('next', 800, 1500, {queued: true}), item('later', 1600, 2300)];
-  assert.deepEqual(ids(planReadAhead(done, 800, false)), [['visible', 2]]);
+  assert.deepEqual(ids(planReadAhead(done, 500, 800, false)), [['visible', 2]]);
+});
+test('a horizontal row queues only the pages on screen, not the ones off to the side', () => {
+  const {planReadAhead} = require('../extension/reading.js');
+  // Four pages side by side, each 760px wide, in a 588px window: only the first one is on screen.
+  const row = [0, 1, 2, 3].map(i => ({id: i, top: 40, bottom: 1117, left: 40 + i * 800, right: 800 + i * 800, queued: false}));
+  const ids = (plan, reading) => plan.map(p => [p.item.id, p.priority]);
+  // rtl: the next page is to the left, so nothing off-screen to the right is read ahead.
+  assert.deepEqual(ids(planReadAhead(row, 588, 376, false, 'rtl'), 'rtl'), [[0, 2]]);
+  // ltr: the next page is the one to the right of the window.
+  assert.deepEqual(ids(planReadAhead(row, 588, 376, false, 'ltr'), 'ltr'), [[0, 2], [1, 3]]);
 });

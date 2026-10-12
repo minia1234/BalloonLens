@@ -28,6 +28,9 @@ CODEX_REASONING = os.environ.get("BALLOONLENS_CODEX_REASONING", "low")
 CLI_TIMEOUT_S = float(os.environ.get("BALLOONLENS_CLI_TIMEOUT", "150"))
 # How many subscription CLI calls run at once (images and chunks of one page share this). 1 = one at a time.
 CLI_PARALLEL = max(1, min(4, int(os.environ.get("BALLOONLENS_CLI_PARALLEL", "3"))))
+# How many subscription jobs may be in flight at once. A job reads its image first, then waits for CLI calls, so this
+# must be larger than CLI_PARALLEL: otherwise a waiting translation holds back the next image's reading.
+CLI_JOB_SLOTS = 6
 
 
 def ollama_base_url(value: str | None) -> str:
