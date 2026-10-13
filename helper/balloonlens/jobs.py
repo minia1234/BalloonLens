@@ -203,47 +203,47 @@ class JobManager:
                 self._finish(job, "failed", blocked)
             return
         image_hash = sha256(job.image)
-        # Reading the image is the GPU step: only one job reads at a time, while others wait on their CLI calls.
-        t_lock = time.perf_counter()
-        with self._ocr_lock:
-            job.timings["ocr_lock_wait_ms"] = round((time.perf_counter() - t_lock) * 1000)
-            t_block = time.perf_counter()
-            t_decode = time.perf_counter()
-            img = self.decode(job.image)
-            job.timings["decode_ms"] = round((time.perf_counter() - t_decode) * 1000)
-            job.width, job.height, job.image_hash = img.width, img.height, image_hash
-            key = ocr_key(image_hash, job.src, f"{config.OCR_VERSION}:{job.reading}")
-            segments = self.cache.get_ocr(key)
-            if segments is None:
+        t_block = time.perf_counter()
+        t_decode = time.perf_counter()
+        img = self.decode(job.image)
+        job.timings["decode_ms"] = round((time.perf_counter() - t_decode) * 1000)
+        job.width, job.height, job.image_hash = img.width, img.height, image_hash
+        key = ocr_key(image_hash, job.src, f"{config.OCR_VERSION}:{job.reading}")
+        segments = self.cache.get_ocr(key)
+        if segments is None:
+            # Reading the image is the GPU step: only one job reads at a time. A page read before skips this wait.
+            t_lock = time.perf_counter()
+            with self._ocr_lock:
+                job.timings["ocr_lock_wait_ms"] = round((time.perf_counter() - t_lock) * 1000)
                 segments, t = self.ocr.run(img, job.src, job.reading)
-                self.cache.put_ocr(key, segments)
-                job.timings.update(t)
-            else:
-                job.timings["ocr_cache"] = True
+            self.cache.put_ocr(key, segments)
+            job.timings.update(t)
+        else:
+            job.timings["ocr_cache"] = True
 
-            def read_region(bbox):
-                region_key = ocr_key(image_hash, job.src, f"{config.OCR_VERSION}:region:{bbox_key(bbox)}")
-                hit = self.cache.get_ocr(region_key)
-                if hit is None:
-                    text, conf, uncertain = self.ocr.read_region(img, bbox, job.src)
-                    hit = {"text": text, "conf": conf, "uncertain": uncertain}
-                    self.cache.put_ocr(region_key, hit)
-                return hit["text"], hit["conf"], hit["uncertain"]
+        def read_region(bbox):
+            region_key = ocr_key(image_hash, job.src, f"{config.OCR_VERSION}:region:{bbox_key(bbox)}")
+            hit = self.cache.get_ocr(region_key)
+            if hit is None:
+                text, conf, uncertain = self.ocr.read_region(img, bbox, job.src)
+                hit = {"text": text, "conf": conf, "uncertain": uncertain}
+                self.cache.put_ocr(region_key, hit)
+            return hit["text"], hit["conf"], hit["uncertain"]
 
-            saved_layout = self.cache.get_layout(image_hash, job.src)
-            segments = layouts.apply_layout(segments, saved_layout, read_region, job.reading)
-            job.layout = saved_layout or layouts.empty()
-            t_present = time.time()
-            segments = layouts.apply_frames(prepare_presentation(img, segments))
-            job.timings['presentation_ms'] = round((time.time()-t_present)*1000)
-            vision_image = None
-            if job.options.get('vision') and job.model.startswith('qwen3.5'):
-                img.thumbnail((1280, 1920))
-                buf = io.BytesIO()
-                img.save(buf, 'JPEG', quality=85)
-                vision_image = base64.b64encode(buf.getvalue()).decode('ascii')
-            del img
-            job.timings["ocr_block_ms"] = round((time.perf_counter() - t_block) * 1000)
+        saved_layout = self.cache.get_layout(image_hash, job.src)
+        segments = layouts.apply_layout(segments, saved_layout, read_region, job.reading)
+        job.layout = saved_layout or layouts.empty()
+        t_present = time.time()
+        segments = layouts.apply_frames(prepare_presentation(img, segments))
+        job.timings['presentation_ms'] = round((time.time()-t_present)*1000)
+        vision_image = None
+        if job.options.get('vision') and job.model.startswith('qwen3.5'):
+            img.thumbnail((1280, 1920))
+            buf = io.BytesIO()
+            img.save(buf, 'JPEG', quality=85)
+            vision_image = base64.b64encode(buf.getvalue()).decode('ascii')
+        del img
+        job.timings["ocr_block_ms"] = round((time.perf_counter() - t_block) * 1000)
 
         # The reader's own fixes win over OCR and are never overwritten by auto translation (section 3.4).
         t_memory = time.perf_counter()

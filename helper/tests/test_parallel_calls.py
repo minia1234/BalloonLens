@@ -179,3 +179,26 @@ def test_subscription_jobs_for_several_images_run_at_once(helper):
     for job_id in ids:
         assert wait_job(client, job_id)["status"] == "done"
     assert backend.peak == config.CLI_PARALLEL
+
+
+def test_a_page_already_read_does_not_wait_for_the_reading_lock(tmp_path):
+    cache = Cache(tmp_path / "c.db")
+    quota = QuotaPolicy(cache)
+    backend = Busy(hold=0.01)
+    router = Router(local=NoLocal(), cli={"claude": CliTranslator(backend, cache, quota)},
+                    backends={"claude": backend}, quota=quota, cache=cache)
+    manager = JobManager(PerImageOcr(), NoLocal(), cache, decode_image, router=router)
+    manager.start()
+    client = TestClient(create_app(manager, TOKEN, port=8787, tags=lambda: ["qwen3.5:9b"], extension_ids={EXT}))
+    first = client.post(f"/v1/jobs?src=ja&tgt=ko&model={CLAUDE}", content=png_with(0), headers=AUTH).json()["id"]
+    assert wait_job(client, first)["status"] == "done"
+    # Another page holds the reading lock for a while. A page that is already in the OCR cache needs no reading,
+    # so it must finish while the lock is still held (wait_job gives up after 15 s if it waits for the lock).
+    manager._ocr_lock.acquire()
+    try:
+        again = client.post(f"/v1/jobs?src=ja&tgt=ko&model={CLAUDE}", content=png_with(0), headers=AUTH).json()["id"]
+        snap = wait_job(client, again)
+    finally:
+        manager._ocr_lock.release()
+    assert snap["status"] == "done"
+    assert snap["timings"]["ocr_cache"] is True

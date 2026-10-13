@@ -183,6 +183,14 @@ def retry_variants(crop: Image.Image) -> list[Image.Image]:
 
 # ---------- engines ----------
 
+def group_crop(img: Image.Image, rects: list[Rect]) -> Image.Image:
+    box = union_rect(rects)
+    size = median(min(r[2] - r[0], r[3] - r[1]) for r in rects)
+    pad = max(3, int(size * 0.15))
+    return img.crop((max(0, box[0] - pad), max(0, box[1] - pad),
+                     min(img.width, box[2] + pad), min(img.height, box[3] + pad)))
+
+
 class OcrEngine:
     def __init__(self, gpu: bool = True):
         self.gpu = gpu
@@ -252,15 +260,21 @@ class OcrEngine:
         clipped = [[max(0, r[0]), max(0, r[1]), min(w, r[2]), min(h, r[3])] for r in rects]
         return dedupe_rects([r for r in clipped if r[2] - r[0] >= 4 and r[3] - r[1] >= 4])
 
-    def recognize_group(self, img: Image.Image, grey: np.ndarray, rects: list[Rect], src_lang: str):
-        """Returns (text, conf, info); info = {"doubts": [...], "retries": n}."""
-        box = union_rect(rects)
-        size = median(min(r[2] - r[0], r[3] - r[1]) for r in rects)
-        pad = max(3, int(size * 0.15))
-        crop = img.crop((max(0, box[0] - pad), max(0, box[1] - pad),
-                         min(img.width, box[2] + pad), min(img.height, box[3] + pad)))
+    def manga_read(self, crops: list[Image.Image]) -> list[str]:
+        """Japanese reading of many crops in one generate call (about 3x faster than one call per crop)."""
+        from manga_ocr.ocr import post_process
+        import torch
+
+        m = self.manga
+        x = torch.stack([m._preprocess(c.convert("L").convert("RGB")) for c in crops]).to(m.model.device)
+        out = m.model.generate(x, max_length=300).cpu()
+        return [post_process(t) for t in m.tokenizer.batch_decode(out, skip_special_tokens=True)]
+
+    def recognize_group(self, img: Image.Image, grey: np.ndarray, rects: list[Rect], src_lang: str, first=None):
+        """Returns (text, conf, info); info = {"doubts": [...], "retries": n}. `first` is a Japanese reading made in a batch."""
+        crop = group_crop(img, rects)
         if src_lang == "ja":
-            text, conf = self.manga(crop).strip(), None
+            text, conf = (first if first is not None else self.manga(crop)).strip(), None
             # Vertical columns: about one character per column width of height.
             capacity = sum(max(r[2] - r[0], r[3] - r[1]) / max(1, min(r[2] - r[0], r[3] - r[1])) for r in rects)
         else:
@@ -320,13 +334,18 @@ class OcrEngine:
         t1 = time.perf_counter()
 
         grey = np.asarray(img.convert("L")) if src_lang != "ja" else None
-        candidates, retries = [], 0
+        spans = []
         for g in groups:
             members = [rects[i] for i in g]
             box = union_rect(members)
             if max(box[2] - box[0], box[3] - box[1]) < 12:
                 continue
-            text, conf, info = self.recognize_group(img, grey, members, src_lang)
+            spans.append((members, box))
+        # Japanese: every balloon of the page is read in one batch; the doubt checks below still run per balloon.
+        firsts = self.manga_read([group_crop(img, members) for members, _ in spans]) if src_lang == "ja" else []
+        candidates, retries = [], 0
+        for i, (members, box) in enumerate(spans):
+            text, conf, info = self.recognize_group(img, grey, members, src_lang, first=firsts[i] if firsts else None)
             retries += info["retries"]
             if text:
                 candidates.append((box, text, conf, info["doubts"]))
