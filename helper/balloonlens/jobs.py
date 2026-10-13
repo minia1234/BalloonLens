@@ -13,6 +13,8 @@ from . import config, memory
 from . import layout as layouts
 from .backends.base import BackendError
 from .cache import bbox_key, ocr_key, sha256
+from PIL import Image
+from .ocr import order_rects
 from .presentation import prepare_presentation
 
 FINISHED = {"done", "partial", "failed", "cancelled"}
@@ -65,6 +67,169 @@ class Job:
             "segments": [dict(s) for s in self.segments], "timings": dict(self.timings),
             'quality': dict(self.quality), "layout": self.layout, "memory": self.memory,
         }
+
+
+PIPELINE_CHUNK = 8     # balloons read, then translated, as one step of a page
+PIPELINE_CONTEXT = 16  # translated lines of earlier steps that a later step still sees as reference
+
+
+def _visible_band(job: Job, img):
+    """The part of the image the reader is looking at, in pixels, when the extension sent it (options.visible = [top, bottom],
+    fractions of the image height). None reads the page in reading order."""
+    band = job.options.get("visible")
+    if not isinstance(band, (list, tuple)) or len(band) != 2:
+        return None
+    try:
+        top, bottom = sorted(min(1.0, max(0.0, float(v))) for v in band)
+    except (TypeError, ValueError):
+        return None
+    if bottom <= top:
+        return None
+    return top * img.height, bottom * img.height
+
+
+def _merge_meta(total: dict, meta: dict) -> None:
+    """Adds one translation step's meta to the page's: counts and times add up, lists join, the first text wins."""
+    for k, v in meta.items():
+        if k == "usage" and isinstance(v, dict):
+            usage = total.setdefault("usage", {})
+            for uk, uv in v.items():
+                if isinstance(uv, (int, float)):
+                    usage[uk] = usage.get(uk, 0) + uv
+        elif isinstance(v, bool):
+            total[k] = total.get(k, False) or v
+        elif isinstance(v, (int, float)):
+            total[k] = total.get(k, 0) + v
+        elif isinstance(v, list):
+            total.setdefault(k, []).extend(v)
+        elif v not in (None, "") and k not in total:
+            total[k] = v
+
+
+class _PageTranslation:
+    """The translation steps of one page. A step translates the balloons it is given, with the translated lines of earlier steps
+    as fixed reference. Steps run one after another on their own thread, so the next balloons are read while a step is in flight."""
+
+    def __init__(self, manager: "JobManager", job: Job, *, edits: dict, reuse: dict, inputs: dict, vision):
+        self._m = manager
+        self._job = job
+        self._edits = edits
+        self._reuse = reuse
+        self._inputs = inputs
+        self._vision = vision
+        self._pool: ThreadPoolExecutor | None = None
+        self._futures = []
+        self._context = []  # (sid, source, translation) of the translated lines that the next step sees
+        self._results = {}  # sid -> (translation, status), as the translator reported them
+        self._by_sid = {}  # sid -> the segment dict the page shows
+        self._next_sid = 0
+        self.translated = {}  # bbox key -> (translation, status), for the final page
+        self.meta = {}
+        self.started_at = None
+        self.steps = 0  # translator calls made for this page
+
+    def submit(self, items):
+        """Queues one step for balloons that were just read: (bbox [x, y, w, h], source text, doubts). Empty steps are skipped."""
+        if not items:
+            return
+        step = []
+        with self._m._lock:
+            for bbox, text, doubts in items:
+                sid = self._next_sid
+                self._next_sid += 1
+                key = bbox_key(bbox)
+                text = self._edits["src"].get(key, text)  # the reader's own source text is what gets translated
+                seg = {"id": sid, "bbox": list(bbox), "src": text, "conf": 0.0, "status": "pending", "tgt": None}
+                if doubts:
+                    seg.update(ocr_uncertain=True, ocr_doubts=doubts)
+                self._job.segments.append(seg)
+                self._by_sid[sid] = seg
+                step.append((sid, key, text, bool(doubts)))
+            if self.started_at is None:
+                self.started_at = time.time()
+                self._job.timings["first_step_ms"] = round((self.started_at - self._job.created) * 1000)
+                self._job.status = "translate"
+        if self._pool is None:
+            self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="balloonlens-translate")
+        self._futures.append(self._pool.submit(self._step, step))
+
+    def wait(self):
+        """Waits for the queued steps. A failed step raises here."""
+        futures, self._futures = self._futures, []
+        for future in futures:
+            future.result()
+
+    def translate_rest(self, segments):
+        """Translates what the steps did not cover, once, on the final page with its own ids: a region the reader added in the layout,
+        or a line whose step did not finish. Lines already translated go along as fixed lines, so the translator sees the whole page."""
+        if all(bbox_key(s["bbox"]) in self.translated or not s["src"].strip() for s in segments):
+            return
+        with self._m._lock:
+            self._by_sid = {s["id"]: s for s in segments}
+        lines, fixed, uncertain = [], {}, set()
+        for s in segments:
+            key = bbox_key(s["bbox"])
+            if not s["src"].strip():
+                continue
+            lines.append((s["id"], s["src"]))
+            if s.get("ocr_uncertain"):
+                uncertain.add(s["id"])
+            if key in self.translated and self.translated[key][1] == "done":
+                fixed[s["id"]] = self.translated[key][0]
+            elif key in self._edits["tgt"]:
+                fixed[s["id"]] = self._edits["tgt"][key]
+            elif key in self._reuse and self._reuse[key]["src"] == s["src"]:
+                fixed[s["id"]] = self._reuse[key]["tgt"]
+        self._results = {}
+        self._call(lines, fixed, uncertain)
+
+    def close(self):
+        if self._pool is not None:
+            self._pool.shutdown(wait=True)
+
+    def _step(self, step):
+        """One translation call: the new balloons, with the recent translated lines of this page as fixed reference."""
+        lines, fixed, uncertain = [], {}, set()
+        for sid, src, tgt in self._context:
+            lines.append((sid, src))
+            fixed[sid] = tgt
+        for sid, key, text, doubtful in step:
+            lines.append((sid, text))
+            if doubtful:
+                uncertain.add(sid)
+            if key in self._edits["tgt"]:
+                fixed[sid] = self._edits["tgt"][key]
+            elif key in self._reuse and self._reuse[key]["src"] == text:
+                fixed[sid] = self._reuse[key]["tgt"]
+        self._call(lines, fixed, uncertain)
+        context = [(sid, src, self._results[sid][0]) for sid, src in lines
+                   if sid in self._results and self._results[sid][1] == "done"]
+        self._context = (self._context + context)[-PIPELINE_CONTEXT:]
+
+    def _call(self, lines, fixed, uncertain):
+        job = self._job
+        # Fixed lines are final already: the page records them here, so it does not depend on what the translator reports.
+        for sid, text in fixed.items():
+            self._on_result(sid, text, "done")
+        translator = self._m.router.translator_for(job.model) if self._m.router else self._m.translator
+        meta = translator.translate_page(
+            lines, job.src, job.tgt, job.model, job.scope, self._on_result, should_cancel=lambda: job.cancelled,
+            context=self._inputs["context"], instructions=self._inputs["instructions"], glossary=self._inputs["glossary"],
+            notes=self._inputs["notes"], fixed=fixed, image=self._vision, uncertain=uncertain,
+            review=job.options.get("review"),
+        )
+        self.steps += 1
+        _merge_meta(self.meta, meta)
+
+    def _on_result(self, sid, text, status):
+        with self._m._lock:
+            seg = self._by_sid.get(sid)
+            if seg is None or self._job.cancelled:
+                return
+            seg["tgt"], seg["status"] = text, status
+            self._results[sid] = (text, status)
+            self.translated[bbox_key(seg["bbox"])] = (text, status)
+            self._job.timings.setdefault("first_result_ms", round((time.time() - self._job.created) * 1000))
 
 
 class JobManager:
@@ -203,23 +368,11 @@ class JobManager:
                 self._finish(job, "failed", blocked)
             return
         image_hash = sha256(job.image)
-        t_block = time.perf_counter()
         t_decode = time.perf_counter()
         img = self.decode(job.image)
         job.timings["decode_ms"] = round((time.perf_counter() - t_decode) * 1000)
         job.width, job.height, job.image_hash = img.width, img.height, image_hash
         key = ocr_key(image_hash, job.src, f"{config.OCR_VERSION}:{job.reading}")
-        segments = self.cache.get_ocr(key)
-        if segments is None:
-            # Reading the image is the GPU step: only one job reads at a time. A page read before skips this wait.
-            t_lock = time.perf_counter()
-            with self._ocr_lock:
-                job.timings["ocr_lock_wait_ms"] = round((time.perf_counter() - t_lock) * 1000)
-                segments, t = self.ocr.run(img, job.src, job.reading)
-            self.cache.put_ocr(key, segments)
-            job.timings.update(t)
-        else:
-            job.timings["ocr_cache"] = True
 
         def read_region(bbox):
             region_key = ocr_key(image_hash, job.src, f"{config.OCR_VERSION}:region:{bbox_key(bbox)}")
@@ -231,21 +384,8 @@ class JobManager:
             return hit["text"], hit["conf"], hit["uncertain"]
 
         saved_layout = self.cache.get_layout(image_hash, job.src)
-        segments = layouts.apply_layout(segments, saved_layout, read_region, job.reading)
         job.layout = saved_layout or layouts.empty()
-        t_present = time.time()
-        segments = layouts.apply_frames(prepare_presentation(img, segments))
-        job.timings['presentation_ms'] = round((time.time()-t_present)*1000)
-        vision_image = None
-        if job.options.get('vision') and job.model.startswith('qwen3.5'):
-            img.thumbnail((1280, 1920))
-            buf = io.BytesIO()
-            img.save(buf, 'JPEG', quality=85)
-            vision_image = base64.b64encode(buf.getvalue()).decode('ascii')
-        del img
-        job.timings["ocr_block_ms"] = round((time.perf_counter() - t_block) * 1000)
-
-        # The reader's own fixes win over OCR and are never overwritten by auto translation (section 3.4).
+        # The edits, the memory, and the vision thumbnail do not depend on the OCR text, so they are ready before the first read.
         t_memory = time.perf_counter()
         edits = self.cache.get_edits(image_hash, job.src, job.tgt)
         inputs = memory.translation_inputs(self.cache, job.scope, job.src, job.tgt, job.model, job.options, image_hash)
@@ -253,52 +393,60 @@ class JobManager:
         # Same image, same rules: stored translations are reused instead of running the model again.
         reuse = memory.reuse_lines(self.cache, job.scope, image_hash, job.src, job.tgt, inputs["rules"]) if job.memory else {}
         job.timings["memory_ms"] = round((time.perf_counter() - t_memory) * 1000)
+        vision_image = None
+        if job.options.get('vision') and job.model.startswith('qwen3.5'):
+            thumb = img.copy()  # the thumbnail must not change the page that OCR still reads
+            thumb.thumbnail((1280, 1920))
+            buf = io.BytesIO()
+            thumb.save(buf, 'JPEG', quality=85)
+            vision_image = base64.b64encode(buf.getvalue()).decode('ascii')
+        job.image = None
+
+        pipe = _PageTranslation(self, job, edits=edits, reuse=reuse, inputs=inputs, vision=vision_image)
+        try:
+            raw = self._read_page(job, img, key, pipe)
+            if job.cancelled:
+                pipe.wait()
+                with self._lock:
+                    self._finish(job, "cancelled")
+                return
+            pipe.wait()
+            # Layout, presentation, and the reader's own text come last, on the whole page.
+            segments = layouts.apply_layout(raw, saved_layout, read_region, job.reading)
+            segments = layouts.apply_frames(prepare_presentation(img, segments))
+            pipe.translate_rest(segments)
+        finally:
+            pipe.close()
+        del img
+        job.timings["steps"] = pipe.steps
+        if pipe.started_at is not None:
+            job.timings["translate_ms"] = round((time.time() - pipe.started_at) * 1000)
+        job.timings["ocr_done_ms"] = round((time.time() - job.created) * 1000)
+
         merged = []
         for s in segments:
-            key = bbox_key(s["bbox"])
+            key_bbox = bbox_key(s["bbox"])
             seg = dict(s, ocr_src=s["src"], tgt=None, status="pending", edited=False)
-            if key in edits["src"]:
-                seg["src"] = edits["src"][key]
-            if key in edits["tgt"]:
-                seg.update(tgt=edits["tgt"][key], status="done", edited=True)
-            elif key in reuse and reuse[key]["src"] == seg["src"]:
-                seg.update(tgt=reuse[key]["tgt"], reused=True)
+            if key_bbox in edits["src"]:
+                seg["src"] = edits["src"][key_bbox]
+            if key_bbox in edits["tgt"]:
+                seg.update(tgt=edits["tgt"][key_bbox], status="done", edited=True)
+            elif key_bbox in reuse and reuse[key_bbox]["src"] == seg["src"]:
+                seg.update(tgt=reuse[key_bbox]["tgt"], reused=True)
+            elif key_bbox in pipe.translated:
+                seg["tgt"], seg["status"] = pipe.translated[key_bbox]
             if not seg["src"].strip() and not seg["edited"]:
                 seg["status"] = "review"  # nothing readable in a reader-drawn box: ask, don't guess
             merged.append(seg)
 
-        with self._lock:
-            job.image = None
-            job.segments = merged
-            if job.cancelled:
-                self._finish(job, "cancelled")
-                return
-            job.status = "translate"
-        t_tr = time.time()
-        job.timings["ocr_done_ms"] = round((t_tr - job.created) * 1000)
-
-        by_id = {s["id"]: s for s in job.segments}
-
-        def on_result(sid, text, status):
-            with self._lock:
-                if job.cancelled:
-                    return
-                by_id[sid]["tgt"], by_id[sid]["status"] = text, status
-                job.timings.setdefault("first_result_ms", round((time.time() - job.created) * 1000))
-
-        uncertain = {s["id"] for s in merged if s.get("ocr_uncertain")}
-        translator = self.router.translator_for(job.model) if self.router else self.translator
-        meta = translator.translate_page(
-            [(s["id"], s["src"]) for s in merged if s["src"].strip()], job.src, job.tgt, job.model, job.scope,
-            on_result, should_cancel=lambda: job.cancelled,
-            context=inputs["context"], instructions=inputs["instructions"], glossary=inputs["glossary"],
-            notes=inputs["notes"], fixed={s['id']: s['tgt'] for s in merged if s['edited'] or s.get('reused')},
-            image=vision_image, uncertain=uncertain, review=job.options.get("review"),
-        )
+        meta = pipe.meta
         job.quality = {k: meta[k] for k in ('quality_errors', 'quality_note') if k in meta}
-        job.timings["translate_ms"] = round((time.time() - t_tr) * 1000)
         job.timings["model_load_ms"] = meta.get("load_ms", 0)
         job.timings["tr_cache_hits"] = meta.get("cache_hits", 0)
+        # Claude call time split: cli_ms = wall time of the calls, api_ms = the API part the CLI reports,
+        # slot_wait_ms / gap_wait_ms = waits before a call starts (zero for local models).
+        for name in ("cli_ms", "api_ms", "slot_wait_ms", "gap_wait_ms"):
+            job.timings[name] = meta.get(name, 0)
         job.timings["reused_lines"] = sum(1 for s in merged if s.get("reused"))
         job.timings["context_lines"] = len(inputs["context"])
         usage = meta.get("usage") or {}
@@ -308,8 +456,10 @@ class JobManager:
         for k in ("proofread_calls", "proofread_lines", "proofread_skipped"):
             if k in meta:
                 job.timings[k] = meta[k]
+        uncertain = {s["id"] for s in merged if s.get("ocr_uncertain")}
 
         with self._lock:
+            job.segments = merged
             # A doubtful reading stays visible but is marked for the reader to check.
             for s in job.segments:
                 if s["id"] in uncertain and not s["edited"] and s["status"] == "done":
@@ -326,6 +476,66 @@ class JobManager:
         if job.memory:
             memory.remember_page(self.cache, job.scope, image_hash, job.src, job.tgt,
                                  job.options.get("work") or {}, inputs["rules"], segments_done)
+
+    def _read_page(self, job: Job, img: Image.Image, key: str, pipe: "_PageTranslation"):
+        """Returns the page's segments in reading order with their final ids. A page that is already cached goes to the translator at once,
+        without waiting for the reading lock. Otherwise the balloons are read under the lock, step by step, and each step goes to the
+        translator while the next one is read. A job that waited for the lock checks the cache again: another job may have read the page."""
+        cached = self.cache.get_ocr(key)
+        if cached is None:
+            visible = _visible_band(job, img)
+            t_lock = time.perf_counter()
+            with self._ocr_lock:
+                job.timings["ocr_lock_wait_ms"] = round((time.perf_counter() - t_lock) * 1000)
+                cached = self.cache.get_ocr(key)
+                if cached is None:
+                    raw = self._read_balloons(job, img, pipe, visible)
+                    if not job.cancelled:
+                        self.cache.put_ocr(key, raw)
+                    return raw
+        job.timings["ocr_cache"] = True
+        for start in range(0, len(cached), PIPELINE_CHUNK):
+            if job.cancelled:
+                break
+            pipe.submit([(s["bbox"], s["src"], s.get("ocr_doubts")) for s in cached[start:start + PIPELINE_CHUNK]])
+        return cached
+
+    def _read_balloons(self, job: Job, img: Image.Image, pipe: "_PageTranslation", visible) -> list:
+        """Reads every balloon of the page, in steps. The caller holds the OCR lock. Returns the segments in reading order."""
+        t_plan = time.perf_counter()
+        spans, order, stats = self.ocr.plan(img, job.src, job.reading, visible=visible)
+        job.timings["detect_ms"] = round((time.perf_counter() - t_plan) * 1000)
+        job.timings["boxes"], job.timings["groups"] = stats["boxes"], stats["groups"]
+        read, recognize_ms, retries = {}, 0, 0
+        t_block = time.perf_counter()
+        for start in range(0, len(order), PIPELINE_CHUNK):
+            if job.cancelled:
+                break
+            ids = order[start:start + PIPELINE_CHUNK]
+            t_read = time.perf_counter()
+            out = self.ocr.read_spans(img, [spans[i] for i in ids], job.src)
+            recognize_ms += round((time.perf_counter() - t_read) * 1000)
+            for i, item in zip(ids, out):
+                read[i] = item
+                retries += item[4]
+            pipe.submit([([b[0], b[1], b[2] - b[0], b[3] - b[1]], text, doubts)
+                         for b, text, _conf, doubts, _r in out if text])
+        job.timings["recognize_ms"] = recognize_ms
+        job.timings["ocr_retries"] = retries
+        job.timings["ocr_block_ms"] = round((time.perf_counter() - t_block) * 1000)
+        if job.cancelled:
+            return []
+        # The final ids follow the page's reading order, exactly as a single read gives them.
+        candidates = [read[i][:4] for i in sorted(read) if read[i][1]]
+        final_order = order_rects([c[0] for c in candidates], job.reading)
+        raw = []
+        for new_id, idx in enumerate(final_order):
+            box, text, conf, doubts = candidates[idx]
+            seg = {"id": new_id, "bbox": [box[0], box[1], box[2] - box[0], box[3] - box[1]], "src": text, "conf": conf}
+            if doubts:
+                seg.update(ocr_uncertain=True, ocr_doubts=doubts)
+            raw.append(seg)
+        return raw
 
     def _write_metrics(self, job: Job):
         if not self.metrics_path:

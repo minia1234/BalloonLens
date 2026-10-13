@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
+from ocr_fakes import PageOcr
 from balloonlens import layout as layouts
 from balloonlens import memory
 from balloonlens.cache import Cache
@@ -167,7 +168,7 @@ def test_work_notes_and_uncertain_ids_reach_the_model(tmp_path):
 
 # ---------- helper API + jobs ----------
 
-class FakeOcr:
+class FakeOcr(PageOcr):
     ready = True
 
     def __init__(self):

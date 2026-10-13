@@ -291,8 +291,18 @@
     }
     const page = location.href.split('#')[0].slice(0, 1000);
     const position = target ? Math.max(0, [...document.querySelectorAll('img')].indexOf(target)) : 0;
+    // The part of the image on screen, as fractions of its height, so the helper reads what the reader sees first.
+    let visible = null;
+    if (target) {
+      const r = target.getBoundingClientRect();
+      if (r.height > 0) {
+        const at = (y) => Math.min(1, Math.max(0, y / r.height));
+        visible = [at(-r.top), at(innerHeight - r.top)];
+      }
+    }
     return { src, tgt, model, reading, priority, session, scope: work.scope,
       options: {instructions:work.instructions || '', glossary:work.glossary || '', context:context.slice(-12), vision:!!settings.vision,
+        visible,
         // Cross-page memory only for a work the reader registered, never guessed from the address.
         work: {page_url: page, position: Math.min(position, 10000), memory: !!work.matched},
         review: settings.reviewMode ?? null} };

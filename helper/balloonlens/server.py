@@ -25,6 +25,9 @@ KEY_RE = re.compile(r"^\d{1,6},\d{1,6},\d{1,6},\d{1,6}$")
 MAX_LINE_CHARS = 2000
 MAX_COORD = 30000
 SUBSCRIPTION_BACKENDS = ("claude",)
+# A page can also come as one frame: the content type below, a 4-byte length, the options JSON, then the image bytes.
+PAGE_FRAME_TYPE = "application/x-balloonlens-page"
+PAGE_OPTIONS_MAX = 64_000
 
 
 def check_box(box):
@@ -55,6 +58,8 @@ class PageOptions(BaseModel):
     work: WorkRef = Field(default_factory=WorkRef)
     # None = the backend's own default: selective for the local model, off for subscription calls.
     review: Literal['off', 'selective', 'all'] | None = None
+    # The part of the page the reader sees, as fractions of the image height: [top, bottom]. Balloons there are read first.
+    visible: list[float] | None = Field(default=None, min_length=2, max_length=2)
 
 
 class AddedRegion(BaseModel):
@@ -253,8 +258,15 @@ def create_app(manager, token: str, port: int = config.PORT, tags=ollama_tags,
         check_pair(src, tgt, model)
         if reading not in READINGS or not 1 <= priority <= 4:
             raise HTTPException(400, "bad_params")
-        is_json = request.headers.get('content-type', '').startswith('application/json')
-        limit = config.MAX_IMAGE_BYTES * 4 // 3 + 100_000 if is_json else config.MAX_IMAGE_BYTES
+        content_type = request.headers.get('content-type', '')
+        is_json = content_type.startswith('application/json')
+        framed = content_type.startswith(PAGE_FRAME_TYPE)
+        if is_json:
+            limit = config.MAX_IMAGE_BYTES * 4 // 3 + 100_000
+        elif framed:
+            limit = config.MAX_IMAGE_BYTES + PAGE_OPTIONS_MAX + 4
+        else:
+            limit = config.MAX_IMAGE_BYTES
         try:
             length = int(request.headers.get("content-length") or 0)
         except ValueError:
@@ -268,19 +280,31 @@ def create_app(manager, token: str, port: int = config.PORT, tags=ollama_tags,
                 raise HTTPException(413, 'image_too_large')
             chunks.append(chunk)
         body = b''.join(chunks)
-        options = PageOptions()
+        page_options = PageOptions()
         if is_json:
             try:
                 envelope = PageBody.model_validate_json(body)
                 body = base64.b64decode(envelope.image, validate=True)
-                options = envelope.options
+                page_options = envelope.options
             except (ValidationError, ValueError, binascii.Error):
                 raise HTTPException(400, 'bad_page')
+        elif framed:
+            # Frame: 4-byte big-endian length, the options as JSON, then the image bytes. No Base64 on either side.
+            if len(body) < 4:
+                raise HTTPException(400, 'bad_page')
+            size = int.from_bytes(body[:4], 'big')
+            if size > PAGE_OPTIONS_MAX or 4 + size > len(body):
+                raise HTTPException(400, 'bad_page')
+            try:
+                page_options = PageOptions.model_validate_json(body[4:4 + size])
+            except ValidationError:
+                raise HTTPException(400, 'bad_page')
+            body = body[4 + size:]
         if not body or len(body) > config.MAX_IMAGE_BYTES:
             raise HTTPException(400 if not body else 413, "bad_image")
         try:
             job = manager.submit(body, src=src, tgt=tgt, model=model, reading=reading, priority=priority,
-                                 session=session[:64], scope=scope[:200], options=options.model_dump())
+                                 session=session[:64], scope=scope[:200], options=page_options.model_dump())
         except QueueFull:
             raise HTTPException(429, "queue_full")
         return {"id": job.id}

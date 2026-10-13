@@ -7,6 +7,7 @@ import time
 import pytest
 from PIL import Image
 
+from ocr_fakes import PageOcr
 from balloonlens.backends import base as base_module
 from balloonlens.backends.base import BackendError, CallCancelled, ProcessRunner, cancel_scope
 from balloonlens.backends.page import CliTranslator
@@ -127,7 +128,7 @@ def png():
     return buf.getvalue()
 
 
-class ExplodingOcr:
+class ExplodingOcr(PageOcr):
     def run(self, img, src, reading):
         raise ValueError("말풍선 원문: 絶対に言わないで")
 

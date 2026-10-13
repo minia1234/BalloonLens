@@ -2,7 +2,8 @@
 
 Why each flag is here (see the design doc, section 4.1):
 - `--tools ""`: the page text is untrusted; with no tools a prompt-injected line cannot read or run anything.
-- `--json-schema` + `structured_output`: the reply shape is checked by the CLI, and we still validate it.
+- Translation sends no `--json-schema`: the system prompt asks for JSON, and we parse and validate it here. The schema
+  is kept for suggestions, where the CLI's own check is used. Without it the reply takes one model turn, not two.
 - `--system-prompt-file`: the translator instructions replace the default Claude Code prompt.
 - `--no-session-persistence`: nothing about the page is kept in the CLI's own history.
 - `--permission-prompts none`: a permission question that nobody can answer is refused, not waited on.
@@ -14,7 +15,7 @@ from pathlib import Path
 
 from .base import (BackendError, BackendStatus, ProcessRunner, api_key_vars_present, classify_failure, clean_env,
                    digest, normalize_usage, parse_json_loose, write_once)
-from .prompts import FIXED_TASK, PAGE_SCHEMA_JSON
+from .prompts import FIXED_TASK
 
 MIN_VERSION = (2, 1, 268)  # `auth status` reports configDirectory from this version on
 DEFAULT_MODEL = "claude-haiku-5-5"
@@ -119,22 +120,25 @@ class ClaudeCodeBackend:
         return self._set(BackendStatus(self.backend_id, "ready", note, version))
 
     # ----- translation -----
-    def complete_json(self, system: str, payload: bytes, *, model=None, schema_json: str = PAGE_SCHEMA_JSON,
+    def complete_json(self, system: str, payload: bytes, *, model=None, schema_json: str | None = None,
                       schema_name: str = "page") -> dict:
-        """One structured call. Returns {"data": dict, "usage": {...}, "seconds": float} or raises BackendError.
+        """One call. Returns {"data": dict, "usage": {...}, "seconds": float} or raises BackendError.
 
+        With schema_json the CLI checks the reply shape (suggestions use this). Without it the reply is the plain JSON
+        the system prompt asks for, read from the text. That is one model turn instead of two (measured with Haiku).
         schema_name is accepted so every caller can pass it the same way."""
         self._ensure_dirs()
         system_path = self._system_file(system)
         args = ["-p", FIXED_TASK,
                 "--model", model or self.model,
                 "--output-format", "json",
-                "--json-schema", schema_json,
                 "--system-prompt-file", str(system_path),
                 "--tools", "",
                 "--no-session-persistence",
                 "--permission-prompts", "none",
                 "--max-turns", str(self.max_turns)]
+        if schema_json:
+            args += ["--json-schema", schema_json]
         if self.effort:
             args += ["--effort", self.effort]
         res = self._run(args, stdin=payload)
@@ -159,4 +163,6 @@ class ClaudeCodeBackend:
             data = parse_json_loose(text)
         if not isinstance(data, dict):
             raise BackendError("schema_violation", "reply is not a JSON object")
-        return {"data": data, "usage": normalize_usage(obj.get("usage")), "seconds": res.seconds}
+        # duration_api_ms is the API part of the CLI's own run; wall time minus it is process start and overhead.
+        return {"data": data, "usage": normalize_usage(obj.get("usage")), "seconds": res.seconds,
+                "api_ms": obj.get("duration_api_ms")}

@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
+from ocr_fakes import PageOcr
 from balloonlens.cache import Cache
 from balloonlens.jobs import JobManager
 from balloonlens.ocr import decode_image
@@ -15,7 +16,7 @@ HOST = {"host": "127.0.0.1:8787"}
 AUTH = {**HOST, "x-balloonlens-token": TOKEN}
 
 
-class FakeOcr:
+class FakeOcr(PageOcr):
     calls = 0
 
     def run(self, img, src, reading):
@@ -202,3 +203,33 @@ def test_page_options_are_bounded(setup):
     encoded = base64.b64encode(png_bytes()).decode()
     for body in ({'image': '!!'}, {'image': encoded, 'options': {'instructions': 'x'*2001}}):
         assert client.post('/v1/jobs?src=ja', headers=AUTH, json=body).status_code == 400
+
+
+def framed(options: dict, image: bytes) -> bytes:
+    import json
+    import struct
+    text = json.dumps(options).encode()
+    return struct.pack(">I", len(text)) + text + image
+
+
+def test_framed_page_carries_options_without_base64(setup):
+    manager, client, translator = setup
+    manager.start()
+    body = framed({'instructions': '친구끼리는 반말', 'context': [{'source': '待って', 'translation': '잠깐만'}]}, png_bytes())
+    r = client.post('/v1/jobs?src=ja', headers={**AUTH, 'content-type': 'application/x-balloonlens-page'}, content=body)
+    assert r.status_code == 200
+    assert wait_done(client, r.json()['id'])['status'] == 'done'
+    assert translator.page_input['instructions'] == '친구끼리는 반말'
+    assert translator.page_input['context'][0]['translation'] == '잠깐만'
+
+
+def test_framed_page_rejects_bad_lengths_and_oversized_options(setup):
+    import struct
+    from balloonlens.server import PAGE_FRAME_TYPE, PAGE_OPTIONS_MAX
+    _, client, _ = setup
+    headers = {**AUTH, 'content-type': PAGE_FRAME_TYPE}
+    assert client.post('/v1/jobs?src=ja', headers=headers, content=b'\x00\x00').status_code == 400
+    assert client.post('/v1/jobs?src=ja', headers=headers, content=struct.pack('>I', 99) + b'{}').status_code == 400
+    assert client.post('/v1/jobs?src=ja', headers=headers,
+                       content=struct.pack('>I', PAGE_OPTIONS_MAX + 1) + b'x' * (PAGE_OPTIONS_MAX + 1)).status_code == 400
+    assert client.post('/v1/jobs?src=ja', headers=headers, content=framed({}, b'')).status_code == 400

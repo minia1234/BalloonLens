@@ -61,8 +61,12 @@ def _add_usage(total: dict, usage: dict):
         total[key] = total.get(key, 0) + int(usage.get(key, 0))
 
 
+TIMING_KEYS = ("cli_ms", "api_ms", "slot_wait_ms", "gap_wait_ms")  # summed per page, see _call
+
+
 def _new_meta() -> dict:
-    return {"calls": 0, "usage": {"input": 0, "output": 0, "cached": 0}, "network_errors": []}
+    return {"calls": 0, "usage": {"input": 0, "output": 0, "cached": 0}, "network_errors": [],
+            **{key: 0 for key in TIMING_KEYS}}
 
 
 def _merge_meta(meta: dict, part: dict):
@@ -70,6 +74,8 @@ def _merge_meta(meta: dict, part: dict):
     meta["calls"] += part["calls"]
     _add_usage(meta["usage"], part["usage"])
     meta["network_errors"].extend(part["network_errors"])
+    for key in TIMING_KEYS:
+        meta[key] += part[key]
     if part.get("error"):
         meta["error"] = part["error"]
     if part.get("fatal") and not meta.get("fatal"):
@@ -100,7 +106,7 @@ class CliTranslator:
             self.quota.record(backend=self.backend.backend_id, model=model, lines=lines, usage=usage,
                               seconds=seconds, outcome=outcome, retry_after=retry_after)
 
-    def call_json(self, system, payload, *, model, schema_json=prompts.PAGE_SCHEMA_JSON, schema_name="page",
+    def call_json(self, system, payload, *, model, schema_json=None, schema_name="page",
                   lines=0, should_cancel=None):
         """One guarded CLI call: quota check, start spacing, the call, then the usage record. Translation and
         suggestions use it.
@@ -113,7 +119,9 @@ class CliTranslator:
         it waited never starts a process. A process that was running when its page was cancelled is stopped by the
         runner and recorded as "cancelled" (it may have used quota)."""
         cancelled = should_cancel or (lambda: False)
+        t_slot = time.monotonic()
         with self._slots:
+            slot_wait = time.monotonic() - t_slot
             with self._gate:
                 if cancelled():
                     raise CallCancelled()
@@ -124,8 +132,9 @@ class CliTranslator:
                 self._next_start = start_at + self.min_gap
                 self._inflight += 1
             try:
-                if start_at > now:
-                    time.sleep(start_at - now)
+                gap_wait = max(0.0, start_at - now)
+                if gap_wait:
+                    time.sleep(gap_wait)
                 if cancelled():  # the page was cancelled while it waited for the start gap
                     raise CallCancelled()
                 started = time.time()
@@ -140,7 +149,7 @@ class CliTranslator:
                     self._record(model, lines, None, round(time.time() - started, 2), e.code, e.retry_after)
                     raise
                 self._record(model, lines, res["usage"], res["seconds"], "ok")
-                return res
+                return dict(res, slot_wait_ms=round(slot_wait * 1000), gap_wait_ms=round(gap_wait * 1000))
             finally:
                 with self._gate:
                     self._inflight -= 1
@@ -169,6 +178,10 @@ class CliTranslator:
                 return None, None
             meta["calls"] += 1
             _add_usage(meta["usage"], res["usage"])
+            meta["cli_ms"] += round(res["seconds"] * 1000)
+            meta["api_ms"] += round(res.get("api_ms") or 0)  # the CLI reports it; 0 when it does not
+            meta["slot_wait_ms"] += res["slot_wait_ms"]
+            meta["gap_wait_ms"] += res["gap_wait_ms"]
             return _items(res["data"], ids), None
 
     def translate_page(self, lines, src, tgt, model, scope, on_result, should_cancel=lambda: False,
@@ -177,7 +190,7 @@ class CliTranslator:
         review = review or "off"
         meta = {"calls": 0, "load_ms": 0, "cache_hits": 0, "quality_errors": [], "network_errors": [],
                 "usage": {"input": 0, "output": 0, "cached": 0}, "review": review,
-                "backend": self.backend.backend_id}
+                "backend": self.backend.backend_id, **{key: 0 for key in TIMING_KEYS}}
         if image is not None:
             meta["image_ignored"] = True  # subscription backends never receive pixels (design decision D1)
 

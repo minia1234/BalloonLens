@@ -17,6 +17,7 @@ from PIL import Image, ImageOps
 from . import config
 
 Rect = list  # [x0, y0, x1, y1] in image pixels
+MANGA_BATCH = 8  # balloons per Japanese generate call
 
 
 class ImageTooLarge(ValueError):
@@ -191,6 +192,17 @@ def group_crop(img: Image.Image, rects: list[Rect]) -> Image.Image:
                      min(img.width, box[2] + pad), min(img.height, box[3] + pad)))
 
 
+def visible_first(order: list[int], boxes: list[Rect], band) -> list[int]:
+    """The reading order, with the boxes that touch the band (top, bottom in pixels) first. Each group keeps its reading order.
+    No band keeps the order as it is."""
+    if band is None:
+        return order
+    top, bottom = band
+    inside = [i for i in order if boxes[i][1] < bottom and boxes[i][3] > top]
+    inside_set = set(inside)
+    return inside + [i for i in order if i not in inside_set]
+
+
 class OcrEngine:
     def __init__(self, gpu: bool = True):
         self.gpu = gpu
@@ -261,7 +273,14 @@ class OcrEngine:
         return dedupe_rects([r for r in clipped if r[2] - r[0] >= 4 and r[3] - r[1] >= 4])
 
     def manga_read(self, crops: list[Image.Image]) -> list[str]:
-        """Japanese reading of many crops in one generate call (about 3x faster than one call per crop)."""
+        """Japanese reading of many crops, a few per generate call (about 3x faster than one call per crop).
+        The cap keeps a long webtoon page with many balloons from making one huge GPU batch."""
+        out = []
+        for i in range(0, len(crops), MANGA_BATCH):
+            out += self._manga_batch(crops[i:i + MANGA_BATCH])
+        return out
+
+    def _manga_batch(self, crops: list[Image.Image]) -> list[str]:
         from manga_ocr.ocr import post_process
         import torch
 
@@ -327,13 +346,12 @@ class OcrEngine:
         with self._infer_lock:
             return self._run(img, src_lang, reading)
 
-    def _run(self, img: Image.Image, src_lang: str, reading: str):
-        t0 = time.perf_counter()
+    def plan(self, img: Image.Image, src_lang: str, reading: str, visible=None):
+        """Detection and grouping only (GPU). Returns (spans, order, stats): spans are (member rects, union box) in group order, and
+        order lists their indices in reading order. With `visible` = (top, bottom) in pixels, the spans that touch that band come
+        first (still in reading order), so a long page shows the part the reader is looking at before the rest."""
         rects = self.detect(img, src_lang)
         groups = group_boxes(rects)
-        t1 = time.perf_counter()
-
-        grey = np.asarray(img.convert("L")) if src_lang != "ja" else None
         spans = []
         for g in groups:
             members = [rects[i] for i in g]
@@ -341,15 +359,29 @@ class OcrEngine:
             if max(box[2] - box[0], box[3] - box[1]) < 12:
                 continue
             spans.append((members, box))
-        # Japanese: every balloon of the page is read in one batch; the doubt checks below still run per balloon.
-        firsts = self.manga_read([group_crop(img, members) for members, _ in spans]) if src_lang == "ja" else []
-        candidates, retries = [], 0
+        boxes = [box for _, box in spans]
+        order = visible_first(order_rects(boxes, reading), boxes, visible)
+        return spans, order, {"boxes": len(rects), "groups": len(groups)}
+
+    def read_spans(self, img: Image.Image, spans, src_lang: str):
+        """Recognition for the given spans (GPU). Returns one (box, text, conf, doubts, retries) per span, in the same order.
+        Japanese spans are read in one batch; the doubt checks still run per balloon."""
+        grey = np.asarray(img.convert("L")) if src_lang != "ja" else None
+        firsts = self.manga_read([group_crop(img, members) for members, _ in spans]) if src_lang == "ja" and spans else []
+        out = []
         for i, (members, box) in enumerate(spans):
             text, conf, info = self.recognize_group(img, grey, members, src_lang, first=firsts[i] if firsts else None)
-            retries += info["retries"]
-            if text:
-                candidates.append((box, text, conf, info["doubts"]))
+            out.append((box, text, conf, info["doubts"], info["retries"]))
+        return out
+
+    def _run(self, img: Image.Image, src_lang: str, reading: str):
+        t0 = time.perf_counter()
+        spans, _, stats = self.plan(img, src_lang, reading)
+        t1 = time.perf_counter()
+        read = self.read_spans(img, spans, src_lang)
         t2 = time.perf_counter()
+        candidates = [(box, text, conf, doubts) for box, text, conf, doubts, _ in read if text]
+        retries = sum(item[4] for item in read)
 
         order = order_rects([c[0] for c in candidates], reading)
         segments = []
@@ -365,5 +397,5 @@ class OcrEngine:
                 seg.update(ocr_uncertain=True, ocr_doubts=doubts)
             segments.append(seg)
         timings = {"detect_ms": round((t1 - t0) * 1000), "recognize_ms": round((t2 - t1) * 1000),
-                   "boxes": len(rects), "groups": len(groups), "ocr_retries": retries}
+                   "boxes": stats["boxes"], "groups": stats["groups"], "ocr_retries": retries}
         return segments, timings

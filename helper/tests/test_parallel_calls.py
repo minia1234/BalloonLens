@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
+from ocr_fakes import PageOcr
 from balloonlens import config
 from balloonlens.backends.base import BackendStatus, write_once
 from balloonlens.backends.page import CliTranslator
@@ -114,7 +115,7 @@ def png_with(k):
     return buf.getvalue()
 
 
-class PerImageOcr:
+class PerImageOcr(PageOcr):
     """Two lines per image; the text depends on the image, so no two images share a translation-cache entry."""
 
     def run(self, img, src, reading):
@@ -202,3 +203,32 @@ def test_a_page_already_read_does_not_wait_for_the_reading_lock(tmp_path):
         manager._ocr_lock.release()
     assert snap["status"] == "done"
     assert snap["timings"]["ocr_cache"] is True
+
+
+class CountingOcr(PerImageOcr):
+    """Counts the reads. The sleep keeps the first read busy while a second job for the same image arrives."""
+
+    def __init__(self):
+        self.reads = 0
+
+    def run(self, img, src, reading):
+        self.reads += 1
+        time.sleep(0.3)
+        return super().run(img, src, reading)
+
+
+def test_two_jobs_for_one_image_read_it_once(tmp_path):
+    cache = Cache(tmp_path / "c.db")
+    quota = QuotaPolicy(cache)
+    backend = Busy(hold=0.01)
+    router = Router(local=NoLocal(), cli={"claude": CliTranslator(backend, cache, quota)},
+                    backends={"claude": backend}, quota=quota, cache=cache)
+    ocr = CountingOcr()
+    manager = JobManager(ocr, NoLocal(), cache, decode_image, router=router)
+    manager.start()
+    client = TestClient(create_app(manager, TOKEN, port=8787, tags=lambda: ["qwen3.5:9b"], extension_ids={EXT}))
+    ids = [client.post(f"/v1/jobs?src=ja&tgt=ko&model={CLAUDE}", content=png_with(0), headers=AUTH).json()["id"]
+           for _ in range(2)]
+    for job_id in ids:
+        assert wait_job(client, job_id)["status"] == "done"
+    assert ocr.reads == 1  # the second job waited for the lock, then found the page already read

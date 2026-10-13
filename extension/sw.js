@@ -116,12 +116,14 @@ async function submitJob(blob, opts) {
     session: opts.session,
     scope: opts.scope || '',
   });
-  const bytes = new Uint8Array(await blob.arrayBuffer());
-  let binary = '';
-  for (let i=0; i<bytes.length; i+=32768) binary += String.fromCharCode(...bytes.subarray(i,i+32768));
+  // One frame: a 4-byte length, the options as JSON, then the image bytes. The image is never Base64-encoded.
+  const optionsBytes = new TextEncoder().encode(JSON.stringify(opts.options || {}));
+  const length = new Uint8Array(4);
+  new DataView(length.buffer).setUint32(0, optionsBytes.length);
   return helper(`/v1/jobs?${q}`, {
     method: "POST",
-    json: {image: btoa(binary), options: opts.options || {}},
+    body: new Blob([length, optionsBytes, blob]),
+    headers: { "Content-Type": "application/x-balloonlens-page" },
     timeoutMs: 30000,
   });
 }

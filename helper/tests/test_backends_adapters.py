@@ -202,6 +202,17 @@ def test_claude_argv_has_fixed_safety_flags_and_no_dialogue(tmp_path):
     assert out["usage"] == {"input": 300, "output": 40, "cached": 100}
 
 
+def test_translation_sends_no_schema_flag_and_suggestions_still_do(tmp_path):
+    """A schema makes the CLI spend a second model turn on every translation, so translation leaves it out."""
+    payload = page_payload([(1, "待って")])
+    runner = FakeRunner(lambda argv, stdin: claude_result([{"id": 1, "text": "잠깐만", "review": False}]))
+    backend = claude_backend(tmp_path, runner)
+    backend.complete_json("system words", payload, model="claude-haiku-5-5")
+    assert "--json-schema" not in runner.calls[0]["argv"]
+    backend.complete_json("system words", payload, model="claude-haiku-5-5", schema_json=PAGE_SCHEMA_JSON)
+    assert "--json-schema" in runner.calls[1]["argv"]
+
+
 def test_claude_reads_result_text_when_structured_output_is_absent(tmp_path):
     runner = FakeRunner(lambda argv, stdin: claude_result([{"id": 1, "text": "잠깐", "review": False}],
                                                           structured=False))

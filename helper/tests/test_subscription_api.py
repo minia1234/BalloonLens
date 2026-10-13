@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
+from ocr_fakes import PageOcr
 from balloonlens import config
 from balloonlens.backends.base import BackendStatus
 from balloonlens.backends.page import CliTranslator
@@ -46,7 +47,7 @@ class FakeCli:
 
 
 
-class Ocr:
+class Ocr(PageOcr):
     def run(self, img, src, reading):
         return [{"id": 0, "bbox": [1, 2, 3, 4], "src": "こんにちは", "conf": None},
                 {"id": 1, "bbox": [5, 6, 7, 8], "src": "さようなら", "conf": None}], {"detect_ms": 1}
