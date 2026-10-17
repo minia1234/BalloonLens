@@ -51,6 +51,7 @@
   const host = document.createElement("balloonlens-root");
   host.style.cssText = "all:initial;position:fixed;inset:0;pointer-events:none;z-index:2147483646;";
   const shadow = host.attachShadow({ mode: "closed" });
+  BalloonLensUI.init(shadow);
   shadow.innerHTML = `<style>
     :host { --blue: #2563eb; }
     [hidden] { display: none !important; } /* "all: unset" on buttons would otherwise undo the hidden attribute */

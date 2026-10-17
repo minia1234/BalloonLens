@@ -183,7 +183,7 @@
   const explainCode = (code) => ERRORS[code] || code;
 
   // Settings backup: only known keys with sane values come back; work notes only for works in the file.
-  const BACKUP_KEYS = ['src','tgt','model','reading','fontScale','bgOpacity','showSource','autoSites','workProfiles','vision','reviewMode'];
+  const BACKUP_KEYS = ['src','tgt','model','reading','fontScale','bgOpacity','showSource','autoSites','workProfiles','vision','reviewMode','uiLanguage'];
   function validateBackup(data) {
     if (!data || data.app !== 'BalloonLens' || !data.settings || typeof data.settings !== 'object') {
       throw new Error('말풍선 렌즈 설정 파일이 아니에요');
@@ -193,6 +193,7 @@
     const text = (v, max) => typeof v === 'string' && v.length <= max;
     pick('src', v => ['ja','en'].includes(v));
     pick('tgt', v => ['ko','en','ja'].includes(v));
+    pick('uiLanguage', v => text(v, 80) && v.trim().length > 0 && !/[\u0000-\u001f]/.test(v));
     pick('model', v => MODEL_IDS.includes(v));
     pick('reading', v => ['rtl','ltr','ttb'].includes(v));
     pick('fontScale', v => typeof v === 'number' && v >= .7 && v <= 1.5);
@@ -251,18 +252,19 @@
   function subscriptionUsageText(usage, formatTime = (ts) => new Date(ts * 1000).toLocaleString('ko-KR', {
     month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
   })) {
+    const ui = (text) => globalThis.BalloonLensUI?.t(text) || text;
     const windows = usage?.windows || [];
-    if (!windows.length) return usage?.state === 'loading' ? 'Claude 남은 사용량 확인 중…' : 'Claude 남은 사용량 확인 불가';
+    if (!windows.length) return ui(usage?.state === 'loading' ? 'Claude 남은 사용량 확인 중…' : 'Claude 남은 사용량 확인 불가');
     const parts = ['five_hour', 'seven_day'].map((id) => {
       const w = windows.find((item) => item.id === id);
       const label = id === 'five_hour' ? '5시간' : '7일';
       const value = w?.remaining_percent;
       const remaining = typeof value === 'number' && Number.isFinite(value) ? `${value}%` : '확인 불가';
       const reset = w?.resets_at ? ` (${formatTime(w.resets_at)} 초기화)` : '';
-      return `${label} 남음 ${remaining}${reset}`;
+      return ui(`${label} 남음 ${remaining}${reset}`);
     });
-    if (usage.stale) parts.unshift('마지막 확인값');
-    if (usage.checked_at) parts.push(`확인 ${formatTime(usage.checked_at)}`);
+    if (usage.stale) parts.unshift(ui('마지막 확인값'));
+    if (usage.checked_at) parts.push(ui(`확인 ${formatTime(usage.checked_at)}`));
     return parts.join(' · ');
   }
   globalThis.BalloonLensReading = {fitText, fitGrowing, sourceFrame, sourceFontSize, workSettings, nextFontScale, needsRetry, speechPreset,

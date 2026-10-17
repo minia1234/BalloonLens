@@ -7,6 +7,10 @@ const MODELS = [
   { name: "qwen3.5:9b", label: "Qwen3.5 9B", size: "6.6GB", role: "페이지 문맥 + 검수" },
 ];
 const explain = (code) => BalloonLensReading.explainCode(code);
+BalloonLensUI.init(document);
+BalloonLensUI.selector(document);
+const alert = (text) => window.alert(BalloonLensUI.t(text));
+const confirm = (text) => window.confirm(BalloonLensUI.t(text));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function call(type, payload = {}) {

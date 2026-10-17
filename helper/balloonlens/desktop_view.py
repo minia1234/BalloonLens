@@ -11,7 +11,7 @@ TRANSPARENT = "#ff00ff"
 
 
 class RegionSelector:
-    def __init__(self, root, native, done):
+    def __init__(self, root, native, done, *, ui=None):
         self.native, self.done = native, done
         self.bounds = native.bounds()
         self.start = None
@@ -23,7 +23,8 @@ class RegionSelector:
         self.canvas.pack(fill="both", expand=True)
         native.place(self.window, self.bounds)
         width = self.bounds[2] - self.bounds[0]
-        self.canvas.create_text(width // 2, 40, text="번역할 범위를 드래그하세요 · Esc 취소",
+        hint = "번역할 범위를 드래그하세요 · Esc 취소"
+        self.canvas.create_text(width // 2, 40, text=ui.text(hint) if ui else hint,
                                 fill="white", font=("맑은 고딕", 18, "bold"))
         self.box = self.canvas.create_rectangle(0, 0, 0, 0, outline="#5eead4", width=4)
         self.canvas.bind("<ButtonPress-1>", self._start)

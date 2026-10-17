@@ -14,6 +14,17 @@
     </div>
   </div>
 
+  <section>
+    <h2>화면 언어</h2>
+    <div class="card controls" style="padding:16px">
+      <div class="row"><input data-ui-language list="uiLanguages" placeholder="언어 이름 또는 코드" maxlength="80" />
+        <button class="btn" data-ui-language-apply>적용</button></div>
+      <datalist id="uiLanguages" data-ui-languages></datalist>
+      <p class="muted">다른 언어는 이름이나 코드를 입력하세요. 처음 선택하면 Claude로 화면 문구를 번역해 저장해요.</p>
+      <p class="muted" data-ui-language-status role="status"></p>
+    </div>
+  </section>
+
   <section id="welcome">
     <div class="section-head"><h2>시작하기</h2><span id="setupSummary" class="badge">확인 중</span></div>
     <ol class="steps">
@@ -140,6 +151,7 @@
       <p class="muted">구독 로그인은 개인 PC에서만 쓰세요. 이 확장을 다른 사람에게 나누거나 배포하면 안 돼요.</p>
     </div>
   </section>
+  <script src="i18n.js"></script>
   <script src="reading.js"></script>
   <script src="options.js"></script>
 </body>

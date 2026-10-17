@@ -5,6 +5,7 @@ const HELPER = "http://127.0.0.1:8787";
 const NATIVE_HOST = "com.balloonlens.helper";
 const ALL_URLS = { origins: ["<all_urls>"] };
 const DEFAULTS = {
+  uiLanguage: 'ko',
   src: "ja",
   tgt: "ko",
   model: "claude-haiku-5-5",
@@ -209,7 +210,7 @@ async function captureRegion(tab, rect, viewport) {
 
 async function sendToTab(tabId, type) {
   // content.js guards against double injection, so injecting every time is safe.
-  await chrome.scripting.executeScript({ target: { tabId }, files: ["reading.js", "editor.js", "content.js"] });
+  await chrome.scripting.executeScript({ target: { tabId }, files: ["i18n.js", "reading.js", "editor.js", "content.js"] });
   return chrome.tabs.sendMessage(tabId, { type, tabId, settings: await settings() });
 }
 
@@ -220,7 +221,29 @@ const BADGE = {
   off: { text: "" },
 };
 
+let uiCatalog;
+async function builtinUILocale(language) {
+  uiCatalog ??= fetch(chrome.runtime.getURL('ui_catalog.json')).then((response) => response.json());
+  const catalog = await uiCatalog;
+  return {state: 'ready', language, translations: language === 'ko' ? {} :
+    Object.fromEntries(Object.entries(catalog).map(([key, values]) => [key, values[language === 'ja' ? 1 : 0]]))};
+}
+
 const handlers = {
+  async uiLocale({language = 'ko', prepare = false}) {
+    if (typeof language !== 'string' || !language.trim() || language.length > 80 || /[\u0000-\u001f]/.test(language)) {
+      throw new Error('invalid_ui_language');
+    }
+    if (['ko', 'en', 'ja'].includes(language)) return builtinUILocale(language);
+    try {
+      if (prepare) await ensureHelper();
+      return prepare
+        ? await helper('/v1/ui-locale', {method: 'POST', json: {language}, timeoutMs: 8000})
+        : await helper(`/v1/ui-locale?${new URLSearchParams({language})}`, {timeoutMs: 5000});
+    } catch {
+      return {...await builtinUILocale('en'), state: 'error', language, error: 'ui_language_unavailable'};
+    }
+  },
   // ---- popup / options ----
   async setup({ checkNative } = {}) {
     const out = { native: false, helper: null, error: null, permission: await chrome.permissions.contains(ALL_URLS) };

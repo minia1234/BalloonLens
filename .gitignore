@@ -25,6 +25,8 @@ token.txt
 auth.json
 .credentials.json
 claude-config/
+ui-locales/
+desktop.json
 
 # Personal material (real manga pages are not part of the project)
 samples/real/

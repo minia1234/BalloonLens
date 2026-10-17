@@ -11,6 +11,14 @@
     <span id="conn" class="badge">확인 중</span>
   </header>
 
+  <div class="group">
+    <label class="field-label" for="uiLanguage">화면 언어</label>
+    <div class="row"><input id="uiLanguage" data-ui-language list="uiLanguages" placeholder="언어 이름 또는 코드" maxlength="80" style="min-width:0;flex:1" />
+      <button class="btn" data-ui-language-apply>적용</button></div>
+    <datalist id="uiLanguages" data-ui-languages></datalist>
+    <small class="muted" data-ui-language-status role="status"></small>
+  </div>
+
   <div id="notice" class="card notice" hidden>
     <div class="notice-body">
       <b id="noticeTitle"></b>
@@ -107,6 +115,7 @@
     <a href="#" id="openOptions">설정 · 시작하기</a>
     <a href="#" id="openShortcuts">단축키</a>
   </footer>
+  <script src="i18n.js"></script>
   <script src="reading.js"></script>
   <script src="popup.js"></script>
 </body>

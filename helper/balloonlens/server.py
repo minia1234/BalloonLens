@@ -17,6 +17,7 @@ from .cache import bbox_key
 from .jobs import QueueFull
 from .ocr import ImageTooLarge
 from .translate import LANG_NAMES, ModelPuller, TranslateError, ollama_tags
+from .ui_locale import UILocaleService
 
 SRC_LANGS = {"ja", "en"}
 READINGS = {"rtl", "ltr", "ttb"}
@@ -126,6 +127,10 @@ class LineIn(BaseModel):
     page: list[ContextLine] = Field(default_factory=list, max_length=100)
 
 
+class UILanguageIn(BaseModel):
+    language: str = Field(min_length=1, max_length=80)
+
+
 class EditIn(BaseModel):
     image_hash: str
     src: str
@@ -135,16 +140,6 @@ class EditIn(BaseModel):
     tgt_text: str | None = None  # "" removes a translation edit
     clear: bool = False
     scope: str = Field(default='', max_length=200)
-
-
-class CapsIn(BaseModel):
-    per_5h: int = Field(ge=0, le=10000)  # 0 with 0 = no self-imposed limit
-    per_7d: int = Field(ge=0, le=10000)
-
-
-class CalibrationIn(BaseModel):
-    backend: Literal['claude']
-    percent: float = Field(ge=0, le=100)
 
 
 def resolve_model(backend: str | None, model: str) -> str:
@@ -216,6 +211,22 @@ def create_app(manager, token: str, port: int = config.PORT, tags=ollama_tags,
 
     def router():
         return getattr(manager, "router", None)
+
+    ui_locales = UILocaleService(router())
+
+    @app.get("/v1/ui-locale")
+    def ui_locale(language: str = "ko"):
+        try:
+            return ui_locales.snapshot(language)
+        except ValueError:
+            raise HTTPException(400, "invalid_ui_language")
+
+    @app.post("/v1/ui-locale")
+    def prepare_ui_locale(body: UILanguageIn):
+        try:
+            return ui_locales.snapshot(body.language, prepare=True)
+        except ValueError:
+            raise HTTPException(400, "invalid_ui_language")
 
     def require_backend(name: str):
         if name not in SUBSCRIPTION_BACKENDS or router() is None:
@@ -494,31 +505,13 @@ def create_app(manager, token: str, port: int = config.PORT, tags=ollama_tags,
         r.quota.resume(name)
         return {"ok": True}
 
-    @app.put("/v1/backends/{name}/caps")
-    def set_caps(name: str, body: CapsIn):
-        r = require_backend(name)
-        try:
-            r.quota.set_caps(name, body.per_5h, body.per_7d)
-        except ValueError:
-            raise HTTPException(400, "bad_caps")
-        return {"ok": True, "caps": r.quota.caps(name)}
-
     @app.get("/v1/usage")
     def usage():
         r = router()
         if r is None:
             return {"backends": {}}
-        return {"backends": {b["id"]: {"usage": b["usage"], "caps": b["caps"], "paused": b["paused"],
-                                       "calibration": b["calibration"]} for b in r.summary()}}
-
-    @app.put("/v1/usage/calibration")
-    def add_calibration(body: CalibrationIn):
-        r = require_backend(body.backend)
-        try:
-            r.quota.add_calibration(body.backend, body.percent)
-        except ValueError:
-            raise HTTPException(400, "bad_percent")
-        return {"ok": True, "estimate": r.quota.calibration_estimate(body.backend)}
+        return {"backends": {b["id"]: {"subscription_usage": b["subscription_usage"], "paused": b["paused"]}
+                             for b in r.summary()}}
 
     @app.exception_handler(ImageTooLarge)
     async def too_large(_, exc):

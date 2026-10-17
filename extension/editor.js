@@ -329,7 +329,7 @@
       if (busy) return;
       const changed = JSON.stringify(hist.state.layout) !== initial;
       if (action === 'cancel') {
-        if (changed && !window.confirm('편집한 영역을 저장하지 않고 닫을까요?')) return;
+        if (changed && !window.confirm(globalThis.BalloonLensUI?.t('편집한 영역을 저장하지 않고 닫을까요?') || '편집한 영역을 저장하지 않고 닫을까요?')) return;
         return close();
       }
       if (action === 'save' && !changed) return close();

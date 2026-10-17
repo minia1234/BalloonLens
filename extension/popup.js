@@ -5,6 +5,8 @@ const DEFAULTS = { src: "ja", tgt: "ko", model: "claude-haiku-5-5", reading: "rt
 const MODEL_INFO = { "translategemma:4b": "TranslateGemma 4B · 3.3GB", "qwen3:8b": "Qwen3 8B · 5.2GB", "qwen3.5:9b": "Qwen3.5 9B · 6.6GB" };
 const RESTRICTED = /^(chrome|edge|about|chrome-extension|devtools|view-source):|^https:\/\/(chromewebstore\.google\.com|chrome\.google\.com\/webstore)/;
 const explain = (code) => BalloonLensReading.explainCode(code);
+BalloonLensUI.init(document);
+BalloonLensUI.selector(document);
 
 let tab = null;
 let tabState = null;
