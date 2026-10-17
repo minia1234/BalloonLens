@@ -116,6 +116,11 @@ def cancel_scope(should_cancel):
         _scope.should_cancel = previous
 
 
+def current_cancel_check():
+    """The cancel check of the call running on this thread, or None."""
+    return getattr(_scope, "should_cancel", None)
+
+
 @dataclass
 class BackendStatus:
     backend: str

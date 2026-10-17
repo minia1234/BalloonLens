@@ -58,3 +58,33 @@ test('an unresponsive image fetch times out so capture fallback can run', async 
   });
   await assert.rejects(vm.runInContext("fetchImage('https://example.test/image.png')", ctx), /image_timeout/);
 });
+
+test('a page goes to the helper as one binary frame: length, options JSON, then the image bytes, with no Base64', async () => {
+  const ctx = worker();
+  ctx.Blob = Blob;
+  ctx.TextEncoder = TextEncoder;
+  ctx.chrome.storage = { local: { get: async () => ({ token: 't' }), set: async () => {} } };
+  const sent = [];
+  ctx.fetch = async (url, init) => {
+    sent.push({ url, init });
+    return { ok: true, status: 200, json: async () => ({ id: 'j1' }) };
+  };
+  const image = new Uint8Array([137, 80, 78, 71, 0, 1, 2, 3, 250, 251]);
+  ctx.blob = new Blob([image], { type: 'image/png' });
+  ctx.opts = { src: 'ja', tgt: 'ko', model: 'm', reading: 'rtl', priority: 2, session: 's', scope: '',
+    options: { vision: false, visible: [0.25, 0.75], work: { page_url: 'https://x.test/a', position: 0, memory: false } } };
+  const out = await vm.runInContext('submitJob(blob, opts)', ctx);
+  assert.deepEqual({ ...out }, { id: 'j1' });
+  const [{ url, init }] = sent;
+  assert.match(url, /\/v1\/jobs\?src=ja&tgt=ko&model=m&reading=rtl&priority=2&session=s&scope=$/);
+  assert.equal(init.method, 'POST');
+  assert.equal(init.headers['Content-Type'], 'application/x-balloonlens-page');
+  assert.equal(init.headers['X-BalloonLens-Token'], 't');
+  const body = new Uint8Array(await init.body.arrayBuffer());
+  const size = new DataView(body.buffer).getUint32(0);
+  const options = JSON.parse(new TextDecoder().decode(body.slice(4, 4 + size)));
+  assert.deepEqual(options.visible, [0.25, 0.75]);
+  assert.equal(options.work.page_url, 'https://x.test/a');
+  assert.deepEqual([...body.slice(4 + size)], [...image]);   // the image bytes follow the options untouched
+  assert.equal(body.length, 4 + size + image.length);
+});

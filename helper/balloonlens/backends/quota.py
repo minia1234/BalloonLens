@@ -1,20 +1,13 @@
-"""Local usage ledger, self-imposed caps and pauses for the subscription backends.
-
-The ledger counts calls and tokens. It never stores dialogue text. Official usage percentages are not
-read automatically (no public interface was confirmed); the reader can type them in, and the
-difference between two readings gives a per-call estimate.
-"""
+"""Local diagnostics and pauses after actual subscription limit responses. No app-imposed call caps."""
 import time
 
 from .base import BackendError
 
-DEFAULT_CAPS = {"claude": {"per_5h": 20, "per_7d": 150}}
 WINDOW_5H = 5 * 3600
 WINDOW_7D = 7 * 86400
 DEFAULT_PAUSE_S = 1800
 MIN_PAUSE_S = 60
 MAX_PAUSE_S = 2 * 3600
-MAX_CAP = 10000
 STREAK_LOOKUP = 8  # recent ledger rows scanned for repeated limit hits
 
 
@@ -32,22 +25,6 @@ class QuotaPolicy:
     def __init__(self, cache, clock=time.time):
         self.cache = cache
         self.clock = clock
-
-    # ----- caps -----
-    def caps(self, name: str) -> dict:
-        stored = self.cache.get_caps(name)
-        return dict(stored) if stored else dict(DEFAULT_CAPS[name])
-
-    def set_caps(self, name: str, per_5h: int, per_7d: int):
-        if (per_5h, per_7d) == (0, 0):  # both 0: no self-imposed limit; the official usage limit still stops calls
-            self.cache.put_caps(name, 0, 0)
-            return
-        for value in (per_5h, per_7d):
-            if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= MAX_CAP:
-                raise ValueError("bad_caps")
-        if per_5h > per_7d:
-            raise ValueError("bad_caps")  # a 5-hour cap above the weekly cap can never bind as intended
-        self.cache.put_caps(name, per_5h, per_7d)
 
     # ----- ledger -----
     def usage(self, name: str) -> dict:
@@ -86,36 +63,7 @@ class QuotaPolicy:
 
     # ----- gate -----
     def check(self, name: str, pending: int = 0):
-        """Raises BackendError('quota_paused') when a pause or a cap blocks the next call.
-
-        pending counts calls already started but not yet recorded, so parallel calls cannot overshoot a cap."""
+        """Only actual Claude limit responses pause calls. Legacy stored caps and pending counts do not block."""
         pause = self.pause_info(name)
         if pause:
             raise BackendError("quota_paused", pause["reason"], retry_after=pause["retry_in_s"])
-        now = self.clock()
-        caps = self.caps(name)
-        if caps["per_5h"] == 0 and caps["per_7d"] == 0:  # no self-imposed limit
-            return
-        for window, limit, label in ((WINDOW_5H, caps["per_5h"], "5시간"), (WINDOW_7D, caps["per_7d"], "7일")):
-            if self.cache.count_usage(name, now - window) + pending >= limit:
-                oldest = self.cache.oldest_usage(name, now - window)
-                retry = (oldest + window - now) if oldest else window
-                raise BackendError("quota_paused", f"{label} 호출 상한 {limit}회에 도달", retry_after=max(0.0, retry))
-
-    # ----- calibration with the official percentage -----
-    def add_calibration(self, name: str, percent: float):
-        if not 0 <= percent <= 100:
-            raise ValueError("bad_percent")
-        self.cache.add_calibration(name, self.clock(), percent, self.cache.total_usage(name))
-
-    def calibration_estimate(self, name: str):
-        rows = self.cache.list_calibration(name, limit=2)
-        if len(rows) < 2:
-            return None
-        newest, older = rows
-        calls = newest["calls_total"] - older["calls_total"]
-        delta = newest["percent"] - older["percent"]
-        if calls <= 0 or delta < 0:
-            return None
-        return {"per_call_percent": round(delta / calls, 3), "calls_between": calls,
-                "percent_between": round(delta, 2)}

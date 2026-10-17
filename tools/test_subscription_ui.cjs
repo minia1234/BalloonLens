@@ -85,3 +85,19 @@ test('helper start failures tell the reader which program to close or which setu
   assert.match(reading.explainCode('helper_start_timeout'), /8787/);
   assert.match(reading.explainCode('native_missing'), /BalloonLens-Setup\.exe/);
 });
+
+test('account usage shows remaining percentages, zero and reset times without local call counts', () => {
+  const usage = {state: 'ready', checked_at: 100, stale: false, windows: [
+    {id: 'five_hour', remaining_percent: 89, resets_at: 2000},
+    {id: 'seven_day', remaining_percent: 0, resets_at: 3000},
+  ]};
+  const text = reading.subscriptionUsageText(usage, () => '초기화 시각');
+  assert.match(text, /5시간 남음 89%/);
+  assert.match(text, /7일 남음 0%/);
+  assert.match(text, /초기화 시각/);
+  assert.doesNotMatch(text, /오늘|회|토큰/);
+  assert.match(reading.subscriptionUsageText({...usage, stale: true}), /마지막 확인값/);
+  assert.match(reading.subscriptionUsageText({state: 'loading', windows: []}), /확인 중/);
+  assert.match(reading.subscriptionUsageText(null), /확인 불가/);
+  assert.doesNotMatch(reading.subscriptionUsageText({state: 'unavailable', windows: []}), /100%/);
+});

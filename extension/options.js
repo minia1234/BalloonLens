@@ -126,41 +126,11 @@ function loginHelp(id) {
 
 
 function usageLine(b) {
-  const u = b.usage || {};
-  const caps = b.caps || {};
   const p = document.createElement("p");
-  p.className = "muted";
-  const capText = (cap) => (cap === 0 ? "제한 없음" : cap ?? "-");
-  p.textContent = `오늘 ${u.calls_today ?? 0}회 · 5시간 ${u.calls_5h ?? 0}/${capText(caps.per_5h)} · 7일 ${u.calls_7d ?? 0}/${capText(caps.per_7d)} · 이 PC가 센 호출 수예요`;
+  p.className = "muted subscription-usage";
+  p.dataset.backend = b.id;
+  p.textContent = BalloonLensReading.subscriptionUsageText(b.subscription_usage);
   return p;
-}
-
-function capsForm(b) {
-  const wrap = document.createElement("div");
-  wrap.className = "inline-fields";
-  const five = document.createElement("input");
-  // 0 in both boxes = no self-imposed limit.
-  Object.assign(five, { type: "number", min: 0, max: 10000, value: b.caps?.per_5h ?? 20 });
-  const week = document.createElement("input");
-  Object.assign(week, { type: "number", min: 0, max: 10000, value: b.caps?.per_7d ?? 150 });
-  wrap.append(labeled("5시간 한도 (0 = 없음)", five), labeled("7일 한도 (0 = 없음)", week),
-    button("한도 저장", () => attempt(() => call("setCaps", { name: b.id, per_5h: Number(five.value), per_7d: Number(week.value) }), "한도를 저장하지 못했어요")));
-  return wrap;
-}
-
-function calibrationForm(b) {
-  const wrap = document.createElement("div");
-  wrap.className = "inline-fields";
-  const pct = document.createElement("input");
-  Object.assign(pct, { type: "number", min: 0, max: 100, step: "0.1", placeholder: "예: 12.5" });
-  const note = document.createElement("small");
-  note.className = "muted";
-  note.textContent = b.calibration
-    ? `호출 1회당 약 ${b.calibration.per_call_percent}% (최근 ${b.calibration.calls_between}회 기준)`
-    : "구독 사용량 화면의 퍼센트를 두 번 적으면 호출 1회당 대략의 값을 계산해요.";
-  wrap.append(labeled("공식 사용량 %", pct),
-    button("기록", () => attempt(() => call("calibrate", { backend: b.id, percent: Number(pct.value) }), "기록하지 못했어요")), note);
-  return wrap;
 }
 
 function backendCard(b) {
@@ -193,7 +163,7 @@ function backendCard(b) {
     act.append(button("일시정지 풀기", () => attempt(() => call("resumeBackend", { name: b.id }), "풀지 못했어요")));
   }
   act.append(button("다시 확인", () => attempt(() => call("checkBackend", { name: b.id }), "확인하지 못했어요")));
-  body.append(usageLine(b), capsForm(b), calibrationForm(b));
+  body.append(usageLine(b));
   card.append(head, detail, body, act);
   return card;
 }
@@ -480,6 +450,15 @@ initDisplay();
 renderSites();
 renderShortcuts();
 refresh();
+setInterval(async () => {
+  const fields = document.querySelectorAll('.subscription-usage');
+  if (!fields.length) return;
+  const data = await call('backends').catch(() => null);
+  for (const field of fields) {
+    const row = data?.backends?.find((b) => b.id === field.dataset.backend);
+    field.textContent = BalloonLensReading.subscriptionUsageText(row?.subscription_usage);
+  }
+}, 5000);
 
 async function initWorks() {
   let {workProfiles = [], vision = false, reviewMode = null} = await chrome.storage.local.get(['workProfiles','vision','reviewMode']);

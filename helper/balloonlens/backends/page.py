@@ -61,7 +61,7 @@ def _add_usage(total: dict, usage: dict):
         total[key] = total.get(key, 0) + int(usage.get(key, 0))
 
 
-TIMING_KEYS = ("cli_ms", "api_ms", "slot_wait_ms", "gap_wait_ms")  # summed per page, see _call
+TIMING_KEYS = ("cli_ms", "api_ms", "slot_wait_ms", "gap_wait_ms", "warm_calls")  # summed per page, see _call
 
 
 def _new_meta() -> dict:
@@ -101,6 +101,12 @@ class CliTranslator:
         self._next_start = 0.0  # monotonic time before which no call may start
         self._inflight = 0
 
+    def prepare(self, src, tgt, model, *, instructions=""):
+        """Prepare the same prompt the page will use, without making a translation call."""
+        prepare = getattr(self.backend, "prepare", None)
+        if prepare is not None:
+            prepare(prompts.system_prompt(src, tgt, instructions), model=model)
+
     def _record(self, model, lines, usage, seconds, outcome, retry_after=None):
         if self.quota is not None:
             self.quota.record(backend=self.backend.backend_id, model=model, lines=lines, usage=usage,
@@ -108,12 +114,11 @@ class CliTranslator:
 
     def call_json(self, system, payload, *, model, schema_json=None, schema_name="page",
                   lines=0, should_cancel=None):
-        """One guarded CLI call: quota check, start spacing, the call, then the usage record. Translation and
+        """One guarded CLI call: actual-limit pause check, start spacing, the call, then the usage record. Translation and
         suggestions use it.
 
-        A call holds one of `parallel` slots while it runs. Its quota check counts the calls already started as
-        pending, and it reserves its start time at least min_gap after the previous start. So parallel calls
-        neither overshoot a cap nor start in one burst. A blocked call starts no process and is not counted.
+        A call holds one of `parallel` slots while it runs and reserves its start time at least min_gap after the
+        previous start. A call paused by Claude's limit starts no process and is not counted.
 
         should_cancel is checked before the quota check and again after the start-gap wait, so a page cancelled while
         it waited never starts a process. A process that was running when its page was cancelled is stopped by the
@@ -182,6 +187,7 @@ class CliTranslator:
             meta["api_ms"] += round(res.get("api_ms") or 0)  # the CLI reports it; 0 when it does not
             meta["slot_wait_ms"] += res["slot_wait_ms"]
             meta["gap_wait_ms"] += res["gap_wait_ms"]
+            meta["warm_calls"] += 1 if res.get("warm") else 0  # calls answered by a process started ahead of time
             return _items(res["data"], ids), None
 
     def translate_page(self, lines, src, tgt, model, scope, on_result, should_cancel=lambda: False,

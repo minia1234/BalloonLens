@@ -291,15 +291,8 @@
     }
     const page = location.href.split('#')[0].slice(0, 1000);
     const position = target ? Math.max(0, [...document.querySelectorAll('img')].indexOf(target)) : 0;
-    // The part of the image on screen, as fractions of its height, so the helper reads what the reader sees first.
-    let visible = null;
-    if (target) {
-      const r = target.getBoundingClientRect();
-      if (r.height > 0) {
-        const at = (y) => Math.min(1, Math.max(0, y / r.height));
-        visible = [at(-r.top), at(innerHeight - r.top)];
-      }
-    }
+    // The part of the image on screen, so the helper reads what the reader sees first.
+    const visible = target ? BalloonLensReading.visibleBand(target.getBoundingClientRect(), innerHeight) : null;
     return { src, tgt, model, reading, priority, session, scope: work.scope,
       options: {instructions:work.instructions || '', glossary:work.glossary || '', context:context.slice(-12), vision:!!settings.vision,
         visible,

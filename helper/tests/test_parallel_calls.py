@@ -86,16 +86,16 @@ def test_chunks_of_one_page_run_side_by_side_and_each_sees_the_whole_page(tmp_pa
     assert all(p["context"] == [] for p in backend.payloads)  # parallel chunks do not wait for each other's replies
 
 
-def test_parallel_calls_count_as_pending_so_a_cap_is_not_overshot(tmp_path):
+def test_parallel_calls_continue_despite_old_stored_caps(tmp_path):
     cache = Cache(tmp_path / "c.db")
     quota = QuotaPolicy(cache)
-    quota.set_caps("claude", 2, 10)
+    cache.put_caps("claude", 2, 10)
     backend = Busy(hold=0.6)  # long enough that the first two calls are still in flight when the third one checks
     meta = CliTranslator(backend, cache, quota, parallel=3).translate_page(
         digit_free_lines(60), "ja", "ko", CLAUDE, "scope", noop)
-    assert len(backend.payloads) == 2  # the third chunk sees two calls in flight and stays home
-    assert meta["fatal"] == "quota_paused"
-    assert quota.usage("claude")["calls_5h"] == 2
+    assert len(backend.payloads) == 3
+    assert not meta.get("fatal")
+    assert quota.usage("claude")["calls_5h"] == 3
 
 
 def test_write_once_keeps_the_first_text_under_a_race(tmp_path):

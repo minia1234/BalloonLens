@@ -1,9 +1,10 @@
-"""Run the local helper:  python -m balloonlens [--warmup] [--background] [--cpu]"""
+"""Run the local helper:  python -m balloonlens [--no-warmup] [--background] [--cpu]"""
 import argparse
 import json
 import socket
 import sys
 import threading
+import time
 import urllib.request
 
 import uvicorn
@@ -34,11 +35,13 @@ def port_state(port: int) -> str:
 
 
 def build_router(cache, local) -> Router:
-    """The Claude Code backend plus the shared usage ledger. Building this starts no CLI process."""
+    """The Claude Code backend plus the shared usage ledger. Building this starts no CLI process: page jobs
+    prepare waiting processes before OCR; direct translation calls can also start them on demand."""
     quota = QuotaPolicy(cache)
     claude = ClaudeCodeBackend(command=config.claude_command(), config_dir=config.CLAUDE_CONFIG_DIR,
                                sandbox_dir=config.CLAUDE_SANDBOX_DIR, runtime_dir=config.RUNTIME_DIR,
-                               model=config.CLAUDE_MODEL, effort=config.CLAUDE_EFFORT, timeout=config.CLI_TIMEOUT_S)
+                               model=config.CLAUDE_MODEL, effort=config.CLAUDE_EFFORT, timeout=config.CLI_TIMEOUT_S,
+                               warm=config.CLI_WARM, warm_ttl=config.CLI_WARM_TTL_S)
     backends = {"claude": claude}
     cli = {name: CliTranslator(backend, cache, quota) for name, backend in backends.items()}
     return Router(local=local, cli=cli, backends=backends, quota=quota, cache=cache)
@@ -52,10 +55,18 @@ def check_backends_in_background(router: Router):
     threading.Thread(target=run, name="backend-check", daemon=True).start()
 
 
+def warm_up(ocr: OcrEngine):
+    """Loads both OCR models and runs each once. The time goes to the log: it is what the first page would otherwise wait for."""
+    t0 = time.perf_counter()
+    ocr.warmup()
+    print(f"OCR 모델 준비: {time.perf_counter() - t0:.1f}초")
+
+
 def main():
     parser = argparse.ArgumentParser(prog="balloonlens")
-    parser.add_argument("--warmup", action="store_true", help="load OCR models right after start")
-    parser.add_argument("--background", action="store_true", help="no console: log to file and warm up OCR")
+    parser.add_argument("--warmup", action="store_true", help="load OCR models right after start (the default; kept for old shortcuts)")
+    parser.add_argument("--no-warmup", action="store_true", help="load OCR models when the first page needs them")
+    parser.add_argument("--background", action="store_true", help="no console: log to file")
     parser.add_argument("--cpu", action="store_true", help="run OCR on CPU")
     args = parser.parse_args()
 
@@ -91,9 +102,10 @@ def main():
 
     manager.start()
     check_backends_in_background(router)
-    if args.warmup or args.background:
-        # Serve immediately; OCR models load behind the scenes (status.ocr_ready tells the UI).
-        threading.Thread(target=ocr.warmup, name="ocr-warmup", daemon=True).start()
+    if not args.no_warmup:
+        # Serve immediately; OCR models load behind the scenes (status.ocr_ready tells the UI). The first page then waits for
+        # nothing but the models: a page that arrives while they load queues behind the warm-up pass.
+        threading.Thread(target=warm_up, args=(ocr,), name="ocr-warmup", daemon=True).start()
 
     print(f"BalloonLens helper {config.VERSION}  http://{config.HOST}:{config.PORT}")
     print("확장 프로그램은 자동으로 연결됨")

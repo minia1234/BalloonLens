@@ -240,8 +240,33 @@
     if (next && !next.queued && !readAheadBusy) plan.push({item: next, priority: 3});
     return plan;
   }
+  // The part of an image that is on screen, as fractions of its height: [top, bottom]. The helper reads the balloons there first.
+  // null when the image has no height or none of it is on screen.
+  function visibleBand(rect, viewportHeight) {
+    if (!(rect.height > 0)) return null;
+    const at = (y) => Math.min(1, Math.max(0, y / rect.height));
+    const band = [at(-rect.top), at(viewportHeight - rect.top)];
+    return band[1] > band[0] ? band : null;
+  }
+  function subscriptionUsageText(usage, formatTime = (ts) => new Date(ts * 1000).toLocaleString('ko-KR', {
+    month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+  })) {
+    const windows = usage?.windows || [];
+    if (!windows.length) return usage?.state === 'loading' ? 'Claude 남은 사용량 확인 중…' : 'Claude 남은 사용량 확인 불가';
+    const parts = ['five_hour', 'seven_day'].map((id) => {
+      const w = windows.find((item) => item.id === id);
+      const label = id === 'five_hour' ? '5시간' : '7일';
+      const value = w?.remaining_percent;
+      const remaining = typeof value === 'number' && Number.isFinite(value) ? `${value}%` : '확인 불가';
+      const reset = w?.resets_at ? ` (${formatTime(w.resets_at)} 초기화)` : '';
+      return `${label} 남음 ${remaining}${reset}`;
+    });
+    if (usage.stale) parts.unshift('마지막 확인값');
+    if (usage.checked_at) parts.push(`확인 ${formatTime(usage.checked_at)}`);
+    return parts.join(' · ');
+  }
   globalThis.BalloonLensReading = {fitText, fitGrowing, sourceFrame, sourceFontSize, workSettings, nextFontScale, needsRetry, speechPreset,
     validateBackup, BACKUP_KEYS, MODEL_INFO, MODEL_IDS, REVIEW_MODES, isSubscription,
-    stateLabel, explainCode, planReadAhead};
+    stateLabel, explainCode, planReadAhead, visibleBand, subscriptionUsageText};
   if (typeof module !== 'undefined') module.exports = globalThis.BalloonLensReading;
 })();

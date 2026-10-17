@@ -235,15 +235,15 @@ def test_claude_failures_map_to_codes(tmp_path, res, code, retry):
     assert info.value.code == code and info.value.retry_after == retry
 
 
-def test_cap_reached_mid_page_stops_the_next_chunk_and_the_blocked_call_is_not_counted(tmp_path):
+def test_an_old_cap_does_not_stop_the_rest_of_a_page(tmp_path):
     cache = Cache(tmp_path / "c.db")
     quota = QuotaPolicy(cache)
-    quota.set_caps("claude", 1, 10)
+    cache.put_caps("claude", 1, 10)
     backend = FakeBackend("claude")
     digit_free = [(i + 1, "台詞" + "あ" * (i % 5 + 1)) for i in range(30)]  # digits would trigger a number check
     got, meta = run_page(CliTranslator(backend, cache, quota), digit_free)
-    assert len(backend.calls) == 1
-    assert meta["fatal"] == "quota_paused"
+    assert len(backend.calls) == 2
+    assert not meta.get("fatal")
     statuses = [status for _, status in got.values()]
-    assert statuses.count("done") == 24 and statuses.count("failed") == 6
-    assert quota.usage("claude")["calls_5h"] == 1
+    assert statuses.count("done") == 30 and statuses.count("failed") == 0
+    assert quota.usage("claude")["calls_5h"] == 2

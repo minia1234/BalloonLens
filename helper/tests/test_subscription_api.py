@@ -129,22 +129,22 @@ def test_translate_line_is_refused_when_the_cli_is_not_logged_in(setup):
 
 # ---------- limits and pauses ----------
 
-def test_caps_are_checked_and_shown(setup):
+def test_legacy_caps_are_ignored_and_only_account_usage_is_shown(setup):
     client = setup[0]
-    assert client.put("/v1/backends/claude/caps", json={"per_5h": 5, "per_7d": 3}, headers=AUTH).status_code == 400
-    r = client.put("/v1/backends/claude/caps", json={"per_5h": 4, "per_7d": 9}, headers=AUTH)
-    assert r.status_code == 200 and r.json()["caps"] == {"per_5h": 4, "per_7d": 9}
+    setup[3].put_caps("claude", 1, 1)
+    for _ in range(25):
+        setup[2].quota.record(backend="claude", model=CLAUDE, lines=1, usage={}, seconds=0, outcome="ok")
+    snap = wait_job(client, start_job(client, CLAUDE))
+    assert snap["status"] == "done", snap
     usage = client.get("/v1/usage", headers=AUTH).json()["backends"]["claude"]
-    assert usage["caps"] == {"per_5h": 4, "per_7d": 9}
+    assert set(usage) == {"subscription_usage", "paused"}
+    assert client.put("/v1/backends/claude/caps", json={"per_5h": 4, "per_7d": 9}, headers=AUTH).status_code == 404
 
 
-def test_calibration_checks_backend_and_range(setup):
+def test_manual_usage_calibration_is_removed(setup):
     client = setup[0]
-    assert client.put("/v1/usage/calibration", json={"backend": "gpt", "percent": 10}, headers=AUTH).status_code == 422
-    assert client.put("/v1/usage/calibration", json={"backend": "claude", "percent": 150},
-                      headers=AUTH).status_code == 422
     r = client.put("/v1/usage/calibration", json={"backend": "claude", "percent": 12.5}, headers=AUTH)
-    assert r.status_code == 200 and r.json()["estimate"] is None
+    assert r.status_code == 404
 
 
 def test_resume_clears_a_quota_pause(setup):

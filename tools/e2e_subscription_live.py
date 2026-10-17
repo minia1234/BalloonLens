@@ -3,7 +3,7 @@
 The helper runs with a fake claude CLI (no subscription use, no model calls, no Ollama). The extension is a
 test copy that points at the helper's test port. Checks go through the extension's own message handlers and pages:
   - the popup shows Claude ready with no extra step; a line translated through the Claude path comes back
-  - the usage cap blocks the next call
+  - translations continue without an app-imposed call cap
   - the settings page shows the Claude card as ready, with no consent button
   - no dialogue text in the helper's log or database
 Run:  python tools/e2e_subscription_live.py   (exit code 0 = every check passed)
@@ -167,12 +167,12 @@ def main():
                 check("the API key from the helper environment is not passed on",
                       "ANTHROPIC_API_KEY" not in rows[0]["env"])
 
-            helper.put("/v1/backends/claude/caps", {"per_5h": 1, "per_7d": 150})
-            capped = sw.evaluate("""async () => await handlers.translateLine({text: 'またね。', src: 'ja', tgt: 'ko',
+            removed, _ = helper.put("/v1/backends/claude/caps", {"per_5h": 1, "per_7d": 150})
+            check("the app-imposed cap endpoint is removed", removed == 404)
+            continued = sw.evaluate("""async () => await handlers.translateLine({text: 'またね。', src: 'ja', tgt: 'ko',
                 model: 'claude-haiku-5-5', scope: '', fresh: true, options: {}, page: []})""")
-            check("the usage cap stops the next Claude call", capped.get("error") == "quota_paused", str(capped))
-            check("no process starts while capped", len(log_rows(claude_log)) == 1)
-            helper.put("/v1/backends/claude/caps", {"per_5h": 20, "per_7d": 150})
+            check("the next translation continues without an app cap", continued.get("status") == "done", str(continued))
+            check("two translations made exactly two calls", len(log_rows(claude_log)) == 2)
 
             options = ctx.new_page()
             options.on("pageerror", lambda e: errors.append(f"options: {e}"))

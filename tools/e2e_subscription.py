@@ -3,7 +3,7 @@
 What it proves, against a helper started with `python -m balloonlens` on port 8788:
   - one call per translation, with the line text on stdin only (never in argv or env)
   - the API keys in the helper's environment are not handed to the CLI
-  - the usage limit blocks the next call without starting a process
+  - app-imposed call caps are removed and successive translations continue
   - no dialogue text in the helper's log, or in the helper's SQLite file
 Run:  python tools/e2e_subscription.py   (exit code 0 = every check passed)
 """
@@ -119,7 +119,7 @@ def translate_line(helper, model, text=DIALOGUE):
 
 
 def phase_one(data, claude_log):
-    print("Phase 1: one call per line, the usage cap")
+    print("Phase 1: one call per line, no app-imposed usage cap")
     helper = Helper(data, claude_log)
     try:
         backends = {b["id"]: b for b in helper.request("GET", "/v1/backends")[1]["backends"]}
@@ -139,11 +139,11 @@ def phase_one(data, claude_log):
             check("payload has text fields only (no image)", set(payload) <= ALLOWED_PAYLOAD_KEYS,
                   str(sorted(set(payload) - ALLOWED_PAYLOAD_KEYS)))
 
-        helper.request("PUT", "/v1/backends/claude/caps", {"per_5h": 1, "per_7d": 5})
-        limited = translate_line(helper, config.CLAUDE_MODEL, "またね。")
-        check("the usage cap blocks the next call", limited.get("error") == "quota_paused", str(limited))
-        check("no process started while the cap holds", len(log_rows(claude_log)) == 1)
-        helper.request("PUT", "/v1/backends/claude/caps", {"per_5h": 20, "per_7d": 150})
+        removed, _ = helper.request("PUT", "/v1/backends/claude/caps", {"per_5h": 1, "per_7d": 5})
+        check("the app-imposed cap endpoint is removed", removed == 404)
+        continued = translate_line(helper, config.CLAUDE_MODEL, "またね。")
+        check("the next translation continues without an app cap", continued.get("status") == "done", str(continued))
+        check("two translations made exactly two calls", len(log_rows(claude_log)) == 2)
     finally:
         helper.stop()
 

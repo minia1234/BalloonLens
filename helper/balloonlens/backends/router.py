@@ -1,13 +1,14 @@
 """Picks the translator for a model and decides whether a subscription call may go out right now.
 
-Gate order (cheapest first): local usage limits and pauses, then the CLI's own login state (cached for a
+Gate order (cheapest first): pauses after actual Claude limit responses, then the CLI's own login state (cached for a
 short time so jobs don't start a CLI process each).
 """
 import time
 
 from .base import BackendError, BackendStatus
 
-STATUS_TTL_S = 120
+STATUS_TTL_S = 120  # a ready status is trusted this long
+NOT_READY_TTL_S = 5  # anything else (not logged in, not installed...) is checked again soon, so a fresh login counts at once
 SUBSCRIPTION_PREFIXES = {"claude": ("claude-",)}
 
 
@@ -37,7 +38,8 @@ class Router:
 
     def status(self, name: str, refresh: bool = False) -> BackendStatus:
         cached = self._status.get(name)
-        if refresh or cached is None or self.clock() - cached.checked_at > STATUS_TTL_S:
+        ttl = STATUS_TTL_S if cached is not None and cached.ready else NOT_READY_TTL_S
+        if refresh or cached is None or self.clock() - cached.checked_at > ttl:
             try:
                 st = self.backends[name].preflight()
             except Exception as e:  # a broken CLI must not take the worker down
@@ -62,6 +64,7 @@ class Router:
         out = []
         for name, backend in self.backends.items():
             st = self._status.get(name) or BackendStatus(backend=name)
+            usage_status = getattr(backend, "usage_status", None)
             out.append({
                 "id": name,
                 "label": backend.label,
@@ -71,8 +74,6 @@ class Router:
                 "version": st.version,
                 "checked_at": st.checked_at,
                 "paused": self.quota.pause_info(name),
-                "caps": self.quota.caps(name),
-                "usage": self.quota.usage(name),
-                "calibration": self.quota.calibration_estimate(name),
+                "subscription_usage": usage_status() if usage_status else None,
             })
         return out

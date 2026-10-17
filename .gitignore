@@ -13,6 +13,7 @@ node_modules/
 # Local data, caches and runtime: never publish
 bench_out/
 release/
+/BalloonLens.exe
 helper/runtime/
 helper/data/
 *.sqlite3

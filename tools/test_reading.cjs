@@ -167,3 +167,14 @@ test('a horizontal row queues only the pages on screen, not the ones off to the 
   // ltr: the next page is the one to the right of the window.
   assert.deepEqual(ids(planReadAhead(row, 588, 376, false, 'ltr'), 'ltr'), [[0, 2], [1, 3]]);
 });
+test('the part of an image on screen is sent as fractions of its height, and nothing for an image that is off screen', () => {
+  const {visibleBand} = require('../extension/reading.js');
+  const rect = (top, height) => ({top, height});
+  assert.deepEqual(visibleBand(rect(100, 400), 800), [0, 1]);          // whole image on screen
+  assert.deepEqual(visibleBand(rect(-200, 400), 800), [0.5, 1]);       // the top half has scrolled off
+  assert.deepEqual(visibleBand(rect(600, 400), 800), [0, 0.5]);        // the bottom half is below the window
+  assert.deepEqual(visibleBand(rect(-3000, 8000), 800), [0.375, 0.475]); // a tall strip: the window shows a slice of it
+  assert.equal(visibleBand(rect(900, 400), 800), null);                // below the window
+  assert.equal(visibleBand(rect(-1000, 400), 800), null);              // above the window
+  assert.equal(visibleBand(rect(0, 0), 800), null);                    // not laid out yet
+});

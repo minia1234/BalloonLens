@@ -9,6 +9,7 @@ import re
 import threading
 import time
 from statistics import median
+from typing import NamedTuple
 
 import cv2
 import numpy as np
@@ -203,13 +204,73 @@ def visible_first(order: list[int], boxes: list[Rect], band) -> list[int]:
     return inside + [i for i in order if i not in inside_set]
 
 
+def clean_rects(rects: list[Rect], width: int, height: int) -> list[Rect]:
+    """Clips the detected boxes to the image, drops specks, and merges the same line seen by two overlapping tiles."""
+    clipped = [[max(0, r[0]), max(0, r[1]), min(width, r[2]), min(height, r[3])] for r in rects]
+    return dedupe_rects([r for r in clipped if r[2] - r[0] >= 4 and r[3] - r[1] >= 4])
+
+
+def spans_of(rects: list[Rect]) -> tuple[list, int]:
+    """The dialogue regions of a page: boxes grouped by distance, each as (member boxes, union box). Returns the regions and the
+    number of groups; a region too small to hold text is dropped."""
+    groups = group_boxes(rects)
+    spans = []
+    for g in groups:
+        members = [rects[i] for i in g]
+        box = union_rect(members)
+        if max(box[2] - box[0], box[3] - box[1]) < 12:
+            continue
+        spans.append((members, box))
+    return spans, len(groups)
+
+
+def in_reading_order(spans: list, reading: str, band) -> list[int]:
+    """Indices of the regions in reading order, the ones that touch the band (top, bottom in pixels) first."""
+    boxes = [box for _, box in spans]
+    return visible_first(order_rects(boxes, reading), boxes, band)
+
+
+def tile_order(ranges: list[tuple[int, int]], band) -> list[int]:
+    """The order tiles are detected in: the tiles that touch the band (top, bottom in pixels) first, then the rest in page order."""
+    if band is None:
+        return list(range(len(ranges)))
+    top, bottom = band
+    near = [i for i, (y0, y1) in enumerate(ranges) if y0 < bottom and y1 > top]
+    return near + [i for i in range(len(ranges)) if i not in near]
+
+
+def group_reach(rects: list[Rect]) -> float:
+    """How far from a region a box that is not detected yet can lie and still join it. Two boxes join when their gap is below the
+    sum of their pads, and a pad is at most 0.3 x the box side, so 0.6 x the largest side seen is the reach."""
+    return 0.6 * max((min(r[2] - r[0], r[3] - r[1]) for r in rects), default=0) + 4
+
+
+def touches_pending(box: Rect, pending: list[tuple[int, int]], reach: float) -> bool:
+    """True when a tile that is not detected yet lies within `reach` of the region (so it may still change)."""
+    return any(y0 < box[3] + reach and y1 > box[1] - reach for y0, y1 in pending)
+
+
+class PlanStep(NamedTuple):
+    """One step of plan_steps(). `spans` are the regions to read now, in reading order. The last step has final=True and also
+    carries the page: all_spans (every region, in group order), order (indices into all_spans in reading order, the band first),
+    and stats."""
+    spans: list
+    final: bool = False
+    all_spans: list | None = None
+    order: list | None = None
+    stats: dict | None = None
+
+
 class OcrEngine:
     def __init__(self, gpu: bool = True):
         self.gpu = gpu
         self._reader = None
         self._manga = None
+        self._primed = False
         self._init_lock = threading.Lock()  # warmup thread and worker may both ask for a model
-        self._infer_lock = threading.Lock()  # one inference at a time: the warm-up pass and real reads share the GPU
+        # One inference at a time: the warm-up pass, a page read and a region read share the GPU. Re-entrant, because run() holds it
+        # while it plans and reads.
+        self._infer_lock = threading.RLock()
 
     @property
     def reader(self):
@@ -229,7 +290,8 @@ class OcrEngine:
 
     @property
     def ready(self) -> bool:
-        return self._reader is not None and self._manga is not None
+        """Both models are loaded and the GPU has run each of them once, so the next page does not pay for the first inference."""
+        return self._reader is not None and self._manga is not None and self._primed
 
     def warmup(self, src_langs=("ja", "en")):
         _ = self.reader
@@ -240,37 +302,43 @@ class OcrEngine:
     def prime(self, src_langs=("ja", "en")):
         """The first inference on a GPU is slow (its kernels are set up then): measured 26 s for the first page after
         a restart, against about 1 s after that. Run one small input through each model now, so the first real page
-        does not pay for it."""
+        does not pay for it. A pass that fails still ends the warm-up: the first page then loads what is missing."""
         with self._infer_lock:
-            blank = Image.new("RGB", (320, 320), "white")
-            self.detect(blank, "ja")  # the text detector's network runs even though a blank page has no boxes
-            if "ja" in src_langs:
-                self.manga(Image.new("RGB", (96, 96), "white"))
-            if "en" in src_langs:
-                self.reader.readtext(np.asarray(Image.new("RGB", (96, 96), "white")), detail=0)
+            try:
+                blank = Image.new("RGB", (320, 320), "white")
+                self.detect(blank, "ja")  # the text detector's network runs even though a blank page has no boxes
+                if "ja" in src_langs:
+                    self.manga(Image.new("RGB", (96, 96), "white"))
+                if "en" in src_langs:
+                    self.reader.readtext(np.asarray(Image.new("RGB", (96, 96), "white")), detail=0)
+            finally:
+                self._primed = True
+
+    def _detect_tile(self, arr: np.ndarray, tile: tuple[int, int], src_lang: str) -> list[Rect]:
+        """The text boxes of one vertical tile of the page, in page coordinates."""
+        y0, y1 = tile
+        horizontal, free = self.reader.detect(
+            arr[y0:y1],
+            min_size=10,
+            text_threshold=0.5,
+            low_text=0.3,
+            link_threshold=0.3,
+            # Japanese columns shouldn't be glued across balloons; grouping merges them later.
+            width_ths=0.1 if src_lang == "ja" else 0.5,
+            add_margin=0.05,
+        )
+        rects = [[int(x_min), int(b_min) + y0, int(x_max), int(b_max) + y0] for x_min, x_max, b_min, b_max in horizontal[0]]
+        for poly in free[0]:
+            xs, ys = [p[0] for p in poly], [p[1] for p in poly]
+            rects.append([int(min(xs)), int(min(ys)) + y0, int(max(xs)), int(max(ys)) + y0])
+        return rects
 
     def detect(self, img: Image.Image, src_lang: str) -> list[Rect]:
         arr = np.asarray(img)
         rects: list[Rect] = []
-        for y0, y1 in tile_ranges(img.width, img.height):
-            horizontal, free = self.reader.detect(
-                arr[y0:y1],
-                min_size=10,
-                text_threshold=0.5,
-                low_text=0.3,
-                link_threshold=0.3,
-                # Japanese columns shouldn't be glued across balloons; grouping merges them later.
-                width_ths=0.1 if src_lang == "ja" else 0.5,
-                add_margin=0.05,
-            )
-            for x_min, x_max, b_min, b_max in horizontal[0]:
-                rects.append([int(x_min), int(b_min) + y0, int(x_max), int(b_max) + y0])
-            for poly in free[0]:
-                xs, ys = [p[0] for p in poly], [p[1] for p in poly]
-                rects.append([int(min(xs)), int(min(ys)) + y0, int(max(xs)), int(max(ys)) + y0])
-        w, h = img.width, img.height
-        clipped = [[max(0, r[0]), max(0, r[1]), min(w, r[2]), min(h, r[3])] for r in rects]
-        return dedupe_rects([r for r in clipped if r[2] - r[0] >= 4 and r[3] - r[1] >= 4])
+        for tile in tile_ranges(img.width, img.height):
+            rects += self._detect_tile(arr, tile, src_lang)
+        return clean_rects(rects, img.width, img.height)
 
     def manga_read(self, crops: list[Image.Image]) -> list[str]:
         """Japanese reading of many crops, a few per generate call (about 3x faster than one call per crop).
@@ -289,43 +357,62 @@ class OcrEngine:
         out = m.model.generate(x, max_length=300).cpu()
         return [post_process(t) for t in m.tokenizer.batch_decode(out, skip_special_tokens=True)]
 
-    def recognize_group(self, img: Image.Image, grey: np.ndarray, rects: list[Rect], src_lang: str, first=None):
-        """Returns (text, conf, info); info = {"doubts": [...], "retries": n}. `first` is a Japanese reading made in a batch."""
-        crop = group_crop(img, rects)
-        if src_lang == "ja":
-            text, conf = (first if first is not None else self.manga(crop)).strip(), None
-            # Vertical columns: about one character per column width of height.
-            capacity = sum(max(r[2] - r[0], r[3] - r[1]) / max(1, min(r[2] - r[0], r[3] - r[1])) for r in rects)
-        else:
-            results = self.reader.recognize(
-                grey, horizontal_list=[[r[0], r[2], r[1], r[3]] for r in rects], free_list=[], detail=1
-            )
-            text, conf = _join_lines(results)
-            capacity = None
-        return self._verify(crop, text, conf, src_lang, capacity)
+    def _recognize_groups(self, grey: np.ndarray, groups: list[list[Rect]]) -> list[tuple[str, float | None]]:
+        """English reading of every group in one recognizer call. Each line comes back with its box, which names its group."""
+        owner, flat = {}, []
+        for gi, members in enumerate(groups):
+            for r in members:
+                owner[tuple(r)] = gi
+                flat.append([r[0], r[2], r[1], r[3]])
+        lines = [[] for _ in groups]
+        for pts, text, conf in self.reader.recognize(grey, horizontal_list=flat, free_list=[], detail=1):
+            xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+            gi = owner.get((int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))))
+            if gi is not None:
+                lines[gi].append((pts, text, conf))
+        return [_join_lines(group) for group in lines]
 
     def _read_crop(self, crop: Image.Image, src_lang: str):
         if src_lang == "ja":
             return self.manga(crop).strip(), None
         return _join_lines(self.reader.readtext(np.asarray(crop), detail=1, paragraph=False))
 
-    def _verify(self, crop, text, conf, src_lang, capacity):
-        """Re-read only a doubtful crop with padding / contrast / binarization and keep the best reading."""
-        doubts = ocr_doubts(text, conf, src_lang, capacity)
-        retries = 0
-        if doubts:
-            best = (reading_score(text, conf, src_lang, doubts), text, conf, doubts)
-            for variant in retry_variants(crop):
-                retries += 1
-                t, c = self._read_crop(variant, src_lang)
-                d = ocr_doubts(t, c, src_lang, capacity)
-                score = reading_score(t, c, src_lang, d)
-                if score > best[0]:
-                    best = (score, t, c, d)
-                if not d:
-                    break
-            _, text, conf, doubts = best
-        return text, conf, {"doubts": doubts, "retries": retries}
+    def _verify_all(self, crops, firsts, capacities, src_lang, reread, stats=None):
+        """Re-reads only the doubtful crops, with padding / contrast / binarization, and keeps the best reading of each.
+        All the crops still in doubt go through the same variant together, so the Japanese model reads them as one batch.
+        `firsts` are the first readings (text, conf); `reread(variants)` reads the variants. Returns (text, conf, doubts, retries)
+        per crop. `stats`, when given, adds up retry_spans / retry_fixed / retry_ms."""
+        best = []
+        for (text, conf), capacity in zip(firsts, capacities):
+            doubts = ocr_doubts(text, conf, src_lang, capacity)
+            best.append((reading_score(text, conf, src_lang, doubts), text, conf, doubts))
+        retries = [0] * len(crops)
+        pending = [i for i, entry in enumerate(best) if entry[3]]
+        started = list(pending)
+        t0 = time.perf_counter()
+        variants = {i: retry_variants(crops[i]) for i in pending}
+        for round_no in range(max((len(v) for v in variants.values()), default=0)):
+            if not pending:
+                break
+            still = []
+            for i, (text, conf) in zip(pending, reread([variants[i][round_no] for i in pending])):
+                retries[i] += 1
+                doubts = ocr_doubts(text, conf, src_lang, capacities[i])
+                score = reading_score(text, conf, src_lang, doubts)
+                if score > best[i][0]:
+                    best[i] = (score, text, conf, doubts)
+                if doubts:
+                    still.append(i)
+            pending = still
+        if stats is not None and started:
+            stats["retry_spans"] = stats.get("retry_spans", 0) + len(started)
+            stats["retry_fixed"] = stats.get("retry_fixed", 0) + sum(1 for i in started if not best[i][3])
+            stats["retry_ms"] = stats.get("retry_ms", 0) + round((time.perf_counter() - t0) * 1000)
+        return [(entry[1], entry[2], entry[3], n) for entry, n in zip(best, retries)]
+
+    def _reread_each(self, src_lang: str):
+        """A `reread` that reads the variants one by one (English, and the single crop of a region)."""
+        return lambda variants: [self._read_crop(v, src_lang) for v in variants]
 
     def read_region(self, img: Image.Image, bbox, src_lang: str):
         """OCR one reader-drawn region. Returns (text, conf, uncertain)."""
@@ -336,10 +423,10 @@ class OcrEngine:
         x, y, w, h = bbox
         pad = max(3, int(min(w, h) * 0.1))
         crop = img.crop((max(0, x - pad), max(0, y - pad), min(img.width, x + w + pad), min(img.height, y + h + pad)))
-        text, conf = self._read_crop(crop, src_lang)
         capacity = max(w, h) / max(1, min(w, h)) if src_lang == "ja" else None
-        text, conf, info = self._verify(crop, text, conf, src_lang, capacity)
-        return text, conf, bool(info["doubts"])
+        [(text, conf, doubts, _)] = self._verify_all([crop], [self._read_crop(crop, src_lang)], [capacity], src_lang,
+                                                     self._reread_each(src_lang))
+        return text, conf, bool(doubts)
 
     def run(self, img: Image.Image, src_lang: str, reading: str):
         """Returns (segments, timings). Segment bbox is [x, y, w, h] in image pixels."""
@@ -350,29 +437,76 @@ class OcrEngine:
         """Detection and grouping only (GPU). Returns (spans, order, stats): spans are (member rects, union box) in group order, and
         order lists their indices in reading order. With `visible` = (top, bottom) in pixels, the spans that touch that band come
         first (still in reading order), so a long page shows the part the reader is looking at before the rest."""
-        rects = self.detect(img, src_lang)
-        groups = group_boxes(rects)
-        spans = []
-        for g in groups:
-            members = [rects[i] for i in g]
-            box = union_rect(members)
-            if max(box[2] - box[0], box[3] - box[1]) < 12:
-                continue
-            spans.append((members, box))
-        boxes = [box for _, box in spans]
-        order = visible_first(order_rects(boxes, reading), boxes, visible)
-        return spans, order, {"boxes": len(rects), "groups": len(groups)}
+        for step in self.plan_steps(img, src_lang, reading, visible):
+            if step.final:
+                return step.all_spans, step.order, step.stats
 
-    def read_spans(self, img: Image.Image, spans, src_lang: str):
+    def plan_steps(self, img: Image.Image, src_lang: str, reading: str, visible=None):
+        """plan() in steps. A page of several tiles is detected tile by tile, the tiles at `visible` first. A step carries the regions
+        whose surroundings are detected already, so reading can start before the rest of the page is detected; the last step carries
+        the regions not yielded before, and the page itself. A region yielded early can still turn out to be part of a larger one
+        when a later tile adds a box next to it: the last step then lists the larger region, which is read as new."""
+        tiles = tile_ranges(img.width, img.height)
+        detect_ms, found, sent = 0.0, {}, set()
+        if len(tiles) == 1:
+            t0 = time.perf_counter()
+            with self._infer_lock:
+                rects = self.detect(img, src_lang)
+            yield self._last_step(rects, reading, visible, sent, 1, (time.perf_counter() - t0) * 1000)
+            return
+        arr = np.asarray(img)
+        for k in tile_order(tiles, visible):
+            t0 = time.perf_counter()
+            with self._infer_lock:
+                found[k] = self._detect_tile(arr, tiles[k], src_lang)
+            detect_ms += (time.perf_counter() - t0) * 1000
+            waiting = [tiles[j] for j in range(len(tiles)) if j not in found]
+            if not waiting:
+                break
+            rects = clean_rects([r for j in sorted(found) for r in found[j]], img.width, img.height)
+            spans, _ = spans_of(rects)
+            reach = group_reach(rects)
+            ready = [s for s in spans if tuple(s[1]) not in sent and not touches_pending(s[1], waiting, reach)]
+            if ready:
+                first = [ready[i] for i in in_reading_order(ready, reading, visible)]
+                sent.update(tuple(box) for _, box in first)
+                yield PlanStep(first)
+        rects = clean_rects([r for j in sorted(found) for r in found[j]], img.width, img.height)
+        yield self._last_step(rects, reading, visible, sent, len(tiles), detect_ms)
+
+    @staticmethod
+    def _last_step(rects, reading, visible, sent, tiles, detect_ms):
+        spans, groups = spans_of(rects)
+        order = in_reading_order(spans, reading, visible)
+        stats = {"boxes": len(rects), "groups": groups, "tiles": tiles, "detect_ms": round(detect_ms)}
+        return PlanStep([spans[i] for i in order if tuple(spans[i][1]) not in sent], True, spans, order, stats)
+
+    def read_spans(self, img: Image.Image, spans, src_lang: str, stats=None):
         """Recognition for the given spans (GPU). Returns one (box, text, conf, doubts, retries) per span, in the same order.
-        Japanese spans are read in one batch; the doubt checks still run per balloon."""
-        grey = np.asarray(img.convert("L")) if src_lang != "ja" else None
-        firsts = self.manga_read([group_crop(img, members) for members, _ in spans]) if src_lang == "ja" and spans else []
-        out = []
-        for i, (members, box) in enumerate(spans):
-            text, conf, info = self.recognize_group(img, grey, members, src_lang, first=firsts[i] if firsts else None)
-            out.append((box, text, conf, info["doubts"], info["retries"]))
-        return out
+        The spans are read together (Japanese in batches), and so are the re-reads of the doubtful ones. `stats`, when given, adds
+        up retry_spans / retry_fixed / retry_ms."""
+        with self._infer_lock:
+            return self._read_spans(img, spans, src_lang, stats)
+
+    def _read_spans(self, img: Image.Image, spans, src_lang: str, stats=None):
+        if not spans:
+            return []
+        crops = [group_crop(img, members) for members, _ in spans]
+        if src_lang == "ja":
+            firsts = [(text.strip(), None) for text in self.manga_read(crops)]
+            # Vertical columns: about one character per column width of height.
+            capacities = [sum(max(r[2] - r[0], r[3] - r[1]) / max(1, min(r[2] - r[0], r[3] - r[1])) for r in members)
+                          for members, _ in spans]
+
+            def reread(variants):
+                return [(text.strip(), None) for text in self.manga_read(variants)]
+        else:
+            firsts = self._recognize_groups(np.asarray(img.convert("L")), [members for members, _ in spans])
+            capacities = [None] * len(spans)
+            reread = self._reread_each(src_lang)
+        checked = self._verify_all(crops, firsts, capacities, src_lang, reread, stats)
+        self._primed = True
+        return [(box, text, conf, doubts, retries) for (_, box), (text, conf, doubts, retries) in zip(spans, checked)]
 
     def _run(self, img: Image.Image, src_lang: str, reading: str):
         t0 = time.perf_counter()

@@ -69,8 +69,15 @@ class Job:
         }
 
 
-PIPELINE_CHUNK = 8     # balloons read, then translated, as one step of a page
-PIPELINE_CONTEXT = 16  # translated lines of earlier steps that a later step still sees as reference
+# A page makes one translator call, or two on a long page. A call costs about 2.7 s before it says anything, whatever its size, so a
+# second call pays only when the reading it overlaps is longer than that: the first PIPELINE_CHUNK balloons go out while the rest is
+# read, but only if reading the rest (estimated from the time the first balloons took) still takes PIPELINE_REST_S or more.
+# Measured on this PC with a fake 3 s translator (tools/pipeline_bench.py --rest-s 0 forces the split): a page of 24 balloons showed
+# its first line 29 % sooner and finished 36 % later; a page of 36 showed it 44 % sooner and finished 18 % later. Reading the rest of
+# such a page takes under 2.5 s here, so the helper keeps these pages in one call.
+PIPELINE_CHUNK = 8       # balloons read together, and the size of the early translation step
+PIPELINE_REST_S = 2.5    # seconds of reading that must still be ahead for the early step to go out
+PIPELINE_CONTEXT = 16    # translated lines of the early step that the second one still sees as reference
 
 
 def _visible_band(job: Job, img):
@@ -393,6 +400,11 @@ class JobManager:
         # Same image, same rules: stored translations are reused instead of running the model again.
         reuse = memory.reuse_lines(self.cache, job.scope, image_hash, job.src, job.tgt, inputs["rules"]) if job.memory else {}
         job.timings["memory_ms"] = round((time.perf_counter() - t_memory) * 1000)
+        # CLI startup overlaps reading the image, including the first page after an idle period.
+        translator = self.router.translator_for(job.model) if self.router else self.translator
+        prepare = getattr(translator, "prepare", None)
+        if prepare is not None and not job.cancelled:
+            prepare(job.src, job.tgt, job.model, instructions=inputs["instructions"])
         vision_image = None
         if job.options.get('vision') and job.model.startswith('qwen3.5'):
             thumb = img.copy()  # the thumbnail must not change the page that OCR still reads
@@ -405,23 +417,32 @@ class JobManager:
         pipe = _PageTranslation(self, job, edits=edits, reuse=reuse, inputs=inputs, vision=vision_image)
         try:
             raw = self._read_page(job, img, key, pipe)
+            # The whole page is read. Translation steps started earlier may still be running.
+            job.timings["ocr_done_ms"] = round((time.time() - job.created) * 1000)
             if job.cancelled:
                 pipe.wait()
                 with self._lock:
                     self._finish(job, "cancelled")
                 return
-            pipe.wait()
-            # Layout, presentation, and the reader's own text come last, on the whole page.
+            # Layout and cleanup depend on the OCR boxes, not Claude's answer. Prepare them while it responds.
+            t_layout = time.perf_counter()
             segments = layouts.apply_layout(raw, saved_layout, read_region, job.reading)
+            t_present = time.perf_counter()
             segments = layouts.apply_frames(prepare_presentation(img, segments))
+            t_wait = time.perf_counter()
+            job.timings.update(layout_ms=round((t_present - t_layout) * 1000),
+                               present_ms=round((t_wait - t_present) * 1000))
+            pipe.wait()
+            job.timings["translate_wait_ms"] = round((time.perf_counter() - t_wait) * 1000)
+            t_rest = time.perf_counter()
             pipe.translate_rest(segments)
+            job.timings["translate_rest_ms"] = round((time.perf_counter() - t_rest) * 1000)
         finally:
             pipe.close()
         del img
         job.timings["steps"] = pipe.steps
         if pipe.started_at is not None:
             job.timings["translate_ms"] = round((time.time() - pipe.started_at) * 1000)
-        job.timings["ocr_done_ms"] = round((time.time() - job.created) * 1000)
 
         merged = []
         for s in segments:
@@ -444,8 +465,9 @@ class JobManager:
         job.timings["model_load_ms"] = meta.get("load_ms", 0)
         job.timings["tr_cache_hits"] = meta.get("cache_hits", 0)
         # Claude call time split: cli_ms = wall time of the calls, api_ms = the API part the CLI reports,
-        # slot_wait_ms / gap_wait_ms = waits before a call starts (zero for local models).
-        for name in ("cli_ms", "api_ms", "slot_wait_ms", "gap_wait_ms"):
+        # slot_wait_ms / gap_wait_ms = waits before a call starts, warm_calls = calls answered by a process started
+        # ahead of time (all zero for local models).
+        for name in ("cli_ms", "api_ms", "slot_wait_ms", "gap_wait_ms", "warm_calls"):
             job.timings[name] = meta.get(name, 0)
         job.timings["reused_lines"] = sum(1 for s in merged if s.get("reused"))
         job.timings["context_lines"] = len(inputs["context"])
@@ -479,8 +501,8 @@ class JobManager:
 
     def _read_page(self, job: Job, img: Image.Image, key: str, pipe: "_PageTranslation"):
         """Returns the page's segments in reading order with their final ids. A page that is already cached goes to the translator at once,
-        without waiting for the reading lock. Otherwise the balloons are read under the lock, step by step, and each step goes to the
-        translator while the next one is read. A job that waited for the lock checks the cache again: another job may have read the page."""
+        in one call, without waiting for the reading lock. Otherwise the balloons are read under the lock, and a long page's first balloons
+        go to the translator while the rest is read. A job that waited for the lock checks the cache again: another job may have read it."""
         cached = self.cache.get_ocr(key)
         if cached is None:
             visible = _visible_band(job, img)
@@ -494,39 +516,84 @@ class JobManager:
                         self.cache.put_ocr(key, raw)
                     return raw
         job.timings["ocr_cache"] = True
-        for start in range(0, len(cached), PIPELINE_CHUNK):
-            if job.cancelled:
-                break
-            pipe.submit([(s["bbox"], s["src"], s.get("ocr_doubts")) for s in cached[start:start + PIPELINE_CHUNK]])
+        if not job.cancelled:  # nothing is being read, so there is nothing to overlap: one call for the page
+            pipe.submit([(s["bbox"], s["src"], s.get("ocr_doubts")) for s in cached])
         return cached
 
     def _read_balloons(self, job: Job, img: Image.Image, pipe: "_PageTranslation", visible) -> list:
-        """Reads every balloon of the page, in steps. The caller holds the OCR lock. Returns the segments in reading order."""
-        t_plan = time.perf_counter()
-        spans, order, stats = self.ocr.plan(img, job.src, job.reading, visible=visible)
-        job.timings["detect_ms"] = round((time.perf_counter() - t_plan) * 1000)
-        job.timings["boxes"], job.timings["groups"] = stats["boxes"], stats["groups"]
-        read, recognize_ms, retries = {}, 0, 0
+        """Reads every balloon of the page and returns the segments in reading order. The caller holds the OCR lock. The balloons are
+        read as the OCR engine finds them (the ones at `visible` first), PIPELINE_CHUNK at a time. They go to the translator in one
+        call when the page is read; on a long page the first PIPELINE_CHUNK go out earlier, while the rest is read. A cancelled job
+        keeps what it read, so the next job for the same page starts from there."""
+        partial_key = ocr_key(job.image_hash, job.src, f"{config.OCR_VERSION}:partial")
+        known = {tuple(item["box"]): (item["text"], item["conf"], item["doubts"], 0)
+                 for item in self.cache.get_ocr(partial_key) or []}
+        read, queue, stats, marks = {}, [], {}, {}
+        pending, early, fresh_count = [], False, 0  # pending: read balloons the translator has not got yet ([x, y, w, h], text, doubts)
+        recognize_ms = 0
         t_block = time.perf_counter()
-        for start in range(0, len(order), PIPELINE_CHUNK):
-            if job.cancelled:
-                break
-            ids = order[start:start + PIPELINE_CHUNK]
+
+        def read_chunk(chunk):
+            nonlocal recognize_ms, early, fresh_count
+            fresh = [span for span in chunk if tuple(span[1]) not in known]
             t_read = time.perf_counter()
-            out = self.ocr.read_spans(img, [spans[i] for i in ids], job.src)
+            done = {}
+            if fresh:
+                done = {tuple(span[1]): item[1:] for span, item in zip(fresh, self.ocr.read_spans(img, fresh, job.src, stats))}
             recognize_ms += round((time.perf_counter() - t_read) * 1000)
-            for i, item in zip(ids, out):
-                read[i] = item
-                retries += item[4]
-            pipe.submit([([b[0], b[1], b[2] - b[0], b[3] - b[1]], text, doubts)
-                         for b, text, _conf, doubts, _r in out if text])
-        job.timings["recognize_ms"] = recognize_ms
-        job.timings["ocr_retries"] = retries
-        job.timings["ocr_block_ms"] = round((time.perf_counter() - t_block) * 1000)
-        if job.cancelled:
+            fresh_count += len(fresh)
+            items = []
+            for _, box in chunk:
+                k = tuple(box)
+                read[k] = done[k] if k in done else known[k]
+                text, _conf, doubts, _retries = read[k]
+                if visible and box[1] < visible[1] and box[3] > visible[0]:
+                    marks["visible"] = time.time()
+                if text:
+                    items.append(([box[0], box[1], box[2] - box[0], box[3] - box[1]], text, doubts))
+            job.timings.setdefault("first_read_ms", round((time.time() - job.created) * 1000))
+            pending.extend(items)
+            # The early step goes out only when reading the balloons still to be read takes longer than a call's fixed cost, at the
+            # speed the ones read so far went; a shorter page waits and goes in one call.
+            if (not early and len(pending) >= PIPELINE_CHUNK and fresh_count
+                    and len(queue) * recognize_ms / fresh_count / 1000 >= PIPELINE_REST_S):
+                early = True
+                pipe.submit(pending[:PIPELINE_CHUNK])
+                del pending[:PIPELINE_CHUNK]
+
+        final = None
+        for step in self.ocr.plan_steps(img, job.src, job.reading, visible=visible):
+            queue += step.spans
+            # A chunk is read when it is full, or when the page is planned and the last balloons are left.
+            while queue and (len(queue) >= PIPELINE_CHUNK or step.final) and not job.cancelled:
+                chunk, queue = queue[:PIPELINE_CHUNK], queue[PIPELINE_CHUNK:]
+                read_chunk(chunk)
+            if step.final:
+                final = step
+            if step.final or job.cancelled:
+                break
+        if not job.cancelled:
+            pipe.submit(pending)  # the whole page, or what the early step left
+        timings = job.timings
+        timings["recognize_ms"] = recognize_ms
+        timings["ocr_retries"] = sum(item[3] for item in read.values())
+        timings.update(ocr_retry_spans=stats.get("retry_spans", 0), ocr_retry_fixed=stats.get("retry_fixed", 0),
+                       ocr_retry_ms=stats.get("retry_ms", 0), ocr_resumed=sum(1 for k in read if k in known))
+        timings["ocr_block_ms"] = round((time.perf_counter() - t_block) * 1000)
+        if "visible" in marks:
+            timings["visible_read_ms"] = round((marks["visible"] - job.created) * 1000)
+        if job.cancelled or final is None:
+            kept = {**known, **read}
+            if len(kept) > len(known):
+                self.cache.put_ocr(partial_key, [{"box": list(k), "text": v[0], "conf": v[1], "doubts": v[2]}
+                                                 for k, v in kept.items()])
             return []
+        if known:
+            self.cache.put_ocr(partial_key, [])  # the page is whole now; what an earlier job kept is no longer needed
+        timings["detect_ms"] = final.stats["detect_ms"]
+        timings["boxes"], timings["groups"], timings["tiles"] = final.stats["boxes"], final.stats["groups"], final.stats["tiles"]
         # The final ids follow the page's reading order, exactly as a single read gives them.
-        candidates = [read[i][:4] for i in sorted(read) if read[i][1]]
+        candidates = [(box, *read[tuple(box)][:3]) for _, box in final.all_spans if read[tuple(box)][0]]
         final_order = order_rects([c[0] for c in candidates], job.reading)
         raw = []
         for new_id, idx in enumerate(final_order):

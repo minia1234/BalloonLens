@@ -357,7 +357,7 @@ const handlers = {
     const q = new URLSearchParams({ scope, model: usable ? model : "qwen3.5:9b" });
     return helper(`/v1/works/suggest?${q}`, { method: "POST", timeoutMs: 180000 });
   },
-  // ---- subscription backends (v0.5.0): the helper keeps limits and CLI state ----
+  // ---- subscription backends: Claude account usage and CLI state ----
   async backends() {
     return helper("/v1/backends", { timeoutMs: 3000 });
   },
@@ -366,12 +366,6 @@ const handlers = {
   },
   async resumeBackend({ name }) {
     return helper(`/v1/backends/${encodeURIComponent(name)}/resume`, { method: "POST" });
-  },
-  async setCaps({ name, per_5h, per_7d }) {
-    return helper(`/v1/backends/${encodeURIComponent(name)}/caps`, { method: "PUT", json: { per_5h, per_7d } });
-  },
-  async calibrate({ backend, percent }) {
-    return helper("/v1/usage/calibration", { method: "PUT", json: { backend, percent } });
   },
   async progress({ state }, sender) {
     const tabId = sender.tab?.id;

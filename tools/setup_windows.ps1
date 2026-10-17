@@ -88,10 +88,13 @@ function Find-Ollama {
 }
 
 function Find-Claude {
-    $command = Get-Command claude.exe -ErrorAction SilentlyContinue
-    if ($command) { return $command.Source }
+    # Same order as helper\balloonlens\config.py: the official claude.exe first, then an npm install's claude.cmd.
     $local = Join-Path $env:USERPROFILE '.local\bin\claude.exe'
     if (Test-Path -LiteralPath $local) { return $local }
+    foreach ($name in @('claude.exe', 'claude.cmd')) {
+        $command = Get-Command $name -ErrorAction SilentlyContinue
+        if ($command) { return $command.Source }
+    }
 }
 
 # Reads the CLI's own status. Never calls a model, so it uses no subscription usage.
@@ -108,7 +111,9 @@ function Get-ClaudeReport([string]$Path) {
     $previous = $env:CLAUDE_CONFIG_DIR
     $env:CLAUDE_CONFIG_DIR = Join-Path (Get-DataDir) 'claude-config'
     try {
-        $info = (& $Path auth status | Out-String) | ConvertFrom-Json
+        # Only the JSON object counts: a notice printed before or after it must not make the status unreadable.
+        $text = (& $Path auth status | Out-String)
+        $info = $text.Substring($text.IndexOf('{'), $text.LastIndexOf('}') - $text.IndexOf('{') + 1) | ConvertFrom-Json
         $report.loggedIn = [bool]$info.loggedIn -and ($info.authMethod -in @('claude.ai', 'oauth_token'))
         if ($info.authMethod -in @('api_key', 'api_key_helper')) { $report.note = 'API 키로 로그인돼 있어요. 구독 로그인으로 바꿔 주세요.' }
     } catch {

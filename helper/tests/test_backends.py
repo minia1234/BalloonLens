@@ -195,42 +195,25 @@ def test_secret_hits_report_pattern_names_not_values():
 
 # ---------- quota ----------
 
-def test_default_caps_and_cap_validation(tmp_path):
-    quota = QuotaPolicy(Cache(tmp_path / "c.db"), clock=Clock())
-    assert quota.caps("claude") == {"per_5h": 20, "per_7d": 150}
-    for bad in ((0, 10), (5, 3), (True, 10)):
-        with pytest.raises(ValueError):
-            quota.set_caps("claude", *bad)
-    quota.set_caps("claude", 2, 10)
-    assert quota.caps("claude") == {"per_5h": 2, "per_7d": 10}
-
-
-def test_zero_caps_mean_no_self_imposed_limit(tmp_path):
+def test_translation_has_no_app_call_limit_by_default(tmp_path):
     clock = Clock()
     quota = QuotaPolicy(Cache(tmp_path / "c.db"), clock=clock)
-    quota.set_caps("claude", 0, 0)
-    assert quota.caps("claude") == {"per_5h": 0, "per_7d": 0}
-    for _ in range(25):  # above the default 20 per five hours
+    for _ in range(160):  # above both former caps (20 per five hours and 150 per week)
         quota.record(backend="claude", model="claude-haiku-5-5", lines=1, usage={}, seconds=0.1, outcome="ok")
         clock.now += 1
-    quota.check("claude")  # no raise
-    with pytest.raises(ValueError):
-        quota.set_caps("claude", 0, 10)  # one zero alone is not "no limit"
+    quota.check("claude", pending=3)
 
 
-def test_five_hour_cap_blocks_then_releases_when_the_window_passes(tmp_path):
+def test_old_stored_caps_do_not_block_translation(tmp_path):
     clock = Clock()
-    quota = QuotaPolicy(Cache(tmp_path / "c.db"), clock=clock)
-    quota.set_caps("claude", 2, 10)
+    cache = Cache(tmp_path / "c.db")
+    cache.put_caps("claude", 1, 1)
+    quota = QuotaPolicy(cache, clock=clock)
     for _ in range(2):
         quota.record(backend="claude", model="claude-haiku-5-5", lines=3, usage={"input": 1}, seconds=0.1,
                      outcome="ok")
         clock.now += 60
-    with pytest.raises(BackendError) as info:
-        quota.check("claude")
-    assert info.value.code == "quota_paused"
-    clock.now += 5 * 3600 + 1
-    quota.check("claude")
+    quota.check("claude", pending=3)
 
 
 def test_quota_exhausted_pauses_with_a_clamped_retry(tmp_path):
@@ -245,19 +228,6 @@ def test_quota_exhausted_pauses_with_a_clamped_retry(tmp_path):
     assert blocked.value.code == "quota_paused"
     quota.resume("claude")
     assert quota.pause_info("claude") is None
-
-
-def test_calibration_gives_a_per_call_estimate(tmp_path):
-    clock = Clock()
-    quota = QuotaPolicy(Cache(tmp_path / "c.db"), clock=clock)
-    quota.add_calibration("claude", 10.0)
-    for _ in range(4):
-        quota.record(backend="claude", model="claude-haiku-5-5", lines=1, usage={}, seconds=0, outcome="ok")
-    quota.add_calibration("claude", 12.0)
-    assert quota.calibration_estimate("claude") == {"per_call_percent": 0.5, "calls_between": 4,
-                                                    "percent_between": 2.0}
-    with pytest.raises(ValueError):
-        quota.add_calibration("claude", 150)
 
 
 # ---------- router gate ----------
@@ -293,8 +263,9 @@ def test_gate_checks_quota_then_cli_state(tmp_path):
     assert router.gate("qwen3.5:9b") is None
 
 
-def test_summary_lists_the_claude_backend_with_its_limits(tmp_path):
+def test_summary_lists_account_usage_without_local_caps_or_estimates(tmp_path):
     router, _, _ = make_router(tmp_path, Clock())
     rows = {row["id"]: row for row in router.summary()}
     assert set(rows) == {"claude"}
-    assert rows["claude"]["caps"] == {"per_5h": 20, "per_7d": 150}
+    assert "subscription_usage" in rows["claude"]
+    assert not {"caps", "usage", "calibration"} & rows["claude"].keys()

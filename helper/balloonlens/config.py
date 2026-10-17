@@ -29,6 +29,11 @@ CLI_PARALLEL = max(1, min(4, int(os.environ.get("BALLOONLENS_CLI_PARALLEL", "3")
 # How many subscription jobs may be in flight at once. A job reads its image first, then waits for CLI calls, so this
 # must be larger than CLI_PARALLEL: otherwise a waiting translation holds back the next image's reading.
 CLI_JOB_SLOTS = 6
+# How many Claude CLI processes wait, already started, for the next translation call. A call that finds one answers in
+# about 0.9 s, one that does not starts its own (about 2.3 s); 0 = the old way, one `claude -p` per call (about 3.1 s).
+# Each waiting process uses about 180 MB and is stopped after CLI_WARM_TTL_S seconds without being needed.
+CLI_WARM = max(0, min(4, int(os.environ.get("BALLOONLENS_CLI_WARM", "2"))))
+CLI_WARM_TTL_S = 600.0
 
 
 def ollama_base_url(value: str | None) -> str:
@@ -90,11 +95,18 @@ def _command_from_env(name: str) -> list[str] | None:
 
 
 def claude_command() -> list[str]:
-    """Claude Code executable. Tests override with BALLOONLENS_CLAUDE_COMMAND (a JSON list)."""
+    """Claude Code executable. Tests override with BALLOONLENS_CLAUDE_COMMAND (a JSON list).
+
+    The official installer's claude.exe comes first. An npm install only has claude.cmd; login and status work through
+    it too, so it is used when nothing else is found. Without any match the official path is returned, so the error
+    names the place the program was expected."""
     override = _command_from_env("BALLOONLENS_CLAUDE_COMMAND")
     if override:
         return override
-    found = shutil.which("claude")
-    if found and found.lower().endswith(".exe"):
+    official = Path.home() / ".local" / "bin" / "claude.exe"
+    if official.is_file():
+        return [str(official)]
+    found = shutil.which("claude.exe") or shutil.which("claude.cmd")
+    if found:
         return [found]
-    return [str(Path.home() / ".local" / "bin" / "claude.exe")]
+    return [str(official)]

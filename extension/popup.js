@@ -164,11 +164,7 @@ async function renderSubscription(model) {
   const [text, kind] = BalloonLensReading.stateLabel(row.state);
   $("subState").textContent = text;
   $("subState").className = `badge ${kind}`;
-  const u = row.usage || {};
-  const caps = row.caps || {};
-  // A cap of 0 means no self-imposed limit (the official usage limit still applies).
-  const capText = (cap) => (cap === 0 ? "제한 없음" : cap ?? "-");
-  $("subUsage").textContent = `오늘 ${u.calls_today ?? 0}회 · 5시간 ${u.calls_5h ?? 0}/${capText(caps.per_5h)} · 7일 ${u.calls_7d ?? 0}/${capText(caps.per_7d)}`;
+  $("subUsage").textContent = BalloonLensReading.subscriptionUsageText(row.subscription_usage);
   if (row.paused) {
     const minutes = Math.max(1, Math.round(row.paused.retry_in_s / 60));
     $("pausedText").textContent = `${row.paused.reason}. 약 ${minutes}분 뒤 다시 시도할 수 있어요. 그동안은 로컬 모델로 이어서 번역할 수 있어요.`;
