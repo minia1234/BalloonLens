@@ -6,12 +6,27 @@ object, so manga text never lands on a command line.
 import json
 
 LANG_NAMES = {
+    "auto": "the automatically detected source language",
     "ja": "Japanese",
     "en": "English",
     "ko": "Korean",
     "zh-Hans": "Chinese (Simplified)",
     "zh-Hant": "Chinese (Traditional)",
+    "es": "Spanish", "fr": "French", "de": "German", "it": "Italian", "pt": "Portuguese",
+    "ru": "Russian", "uk": "Ukrainian", "ar": "Arabic", "hi": "Hindi", "bn": "Bengali",
+    "th": "Thai", "vi": "Vietnamese", "id": "Indonesian", "tr": "Turkish", "pl": "Polish",
 }
+
+
+def language_name(code):
+    return LANG_NAMES.get(code, code)
+
+
+def valid_target(code):
+    return (isinstance(code, str) and 1 < len(code.strip()) and len(code) <= 80 and code.strip().lower() != "auto"
+            and any(c.isalpha() for c in code) and all(c.isalnum() or c in " -()" for c in code))
+
+
 # One CLI call handles at most this many lines; longer pages are split in reading order.
 MAX_LINES_PER_CALL = 24
 # Lines from the end of the previous chunk that are passed on as context for the next one.
@@ -68,7 +83,7 @@ SUGGEST_SCHEMA = {
 
 
 def system_prompt(src: str, tgt: str, instructions: str = "", *, proofread: bool = False) -> str:
-    s, t = LANG_NAMES[src], LANG_NAMES[tgt]
+    s, t = language_name(src), language_name(tgt)
     lines = [
         f"You translate comic dialogue from {s} to {t}.",
         "The stdin data is one JSON object. `target_ids` lists the only ids to translate. `page` gives every "
@@ -82,6 +97,10 @@ def system_prompt(src: str, tgt: str, instructions: str = "", *, proofread: bool
         "Add no notes or explanations. If a line is unclear or the context is not enough, set review to true "
         "and give a short reason.",
     ]
+    if src == "auto":
+        lines.append("Detect the source language of each line from its text; a page may mix languages. "
+                     "Translate every target id into the requested target language. If a line is already in the target "
+                     "language, return it unchanged. Do not add language labels or explanations.")
     if tgt == "ko":
         lines += [
             "한국어: 출판된 만화처럼 자연스럽고 간결한 구어체로 쓰고, 말풍선 길이에 맞게 줄입니다. "

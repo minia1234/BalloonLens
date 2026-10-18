@@ -1,7 +1,7 @@
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search); // ?tabId= lets tests open the popup as a normal page
 const ALL_URLS = { origins: ["<all_urls>"] };
-const DEFAULTS = { src: "ja", tgt: "ko", model: "claude-haiku-5-5", reading: "rtl", autoSites: [] };
+const DEFAULTS = { src: "auto", tgt: "ko", model: "claude-haiku-5-5", reading: "rtl", autoSites: [] };
 const MODEL_INFO = { "translategemma:4b": "TranslateGemma 4B · 3.3GB", "qwen3:8b": "Qwen3 8B · 5.2GB", "qwen3.5:9b": "Qwen3.5 9B · 6.6GB" };
 const RESTRICTED = /^(chrome|edge|about|chrome-extension|devtools|view-source):|^https:\/\/(chromewebstore\.google\.com|chrome\.google\.com\/webstore)/;
 const explain = (code) => BalloonLensReading.explainCode(code);
@@ -54,11 +54,35 @@ async function init() {
     ? { id: Number(params.get("tabId")), url: params.get("url") || "" }
     : (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
   if (params.has("tabId") && !tab.url) tab.url = (await chrome.tabs.get(tab.id).catch(() => ({}))).url || "";
-  const saved = { ...DEFAULTS, ...(await chrome.storage.local.get(Object.keys(DEFAULTS))) };
+  const stored = await chrome.storage.local.get([...Object.keys(DEFAULTS), 'sourceModeVersion']);
+  if (stored.sourceModeVersion !== 1) {
+    stored.src = 'auto';
+    await chrome.storage.local.set({src: 'auto', sourceModeVersion: 1});
+  }
+  const saved = { ...DEFAULTS, ...stored };
+  const packs = await fetch(chrome.runtime.getURL('ui_languages.json')).then(response => response.json());
+  const languages = packs.languages;
+  for (const [code, label] of Object.entries(languages)) {
+    const option = document.createElement('option');
+    option.value = label;
+    option.label = code;
+    $('targetLanguages').append(option);
+  }
 
   for (const f of ["src", "tgt"]) {
-    $(f).value = saved[f];
-    $(f).addEventListener("change", () => chrome.storage.local.set({ [f]: $(f).value }));
+    $(f).value = f === 'tgt' ? languages[saved[f]] || saved[f] : saved[f];
+    $(f).addEventListener("change", () => {
+      let value = $(f).value.trim();
+      if (f === 'tgt') {
+        value = Object.keys(languages).find(code => languages[code] === value || code.toLowerCase() === value.toLowerCase()) ||
+          packs.aliases[value.toLowerCase()] || value;
+        const valid = value.length > 1 && value.length <= 80 && value.toLowerCase() !== 'auto' &&
+          /\p{L}/u.test(value) && /^[\p{L}\p{N} ()-]+$/u.test(value);
+        $(f).setCustomValidity(valid ? '' : '목표 언어 이름이나 언어 코드를 입력해 주세요.');
+        if (!valid) return void $(f).reportValidity();
+      }
+      chrome.storage.local.set({ [f]: value });
+    });
   }
   document.querySelectorAll(".seg-ctl").forEach((group) => {
     const field = group.dataset.field;

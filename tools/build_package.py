@@ -23,6 +23,7 @@ REQUIRED = {'Setup.cmd', 'BalloonLens.cmd', 'BalloonLens-Setup.exe', 'BalloonLen
             'tools/setup_windows.ps1', 'tools/setup_gui.py', 'tools/desktop_launcher.py',
             'helper/balloonlens/desktop.py', 'helper/balloonlens/desktop_client.py',
             'helper/balloonlens/desktop_windows.py', 'helper/balloonlens/desktop_view.py',
+            'helper/balloonlens/desktop_controls.py', 'helper/balloonlens/auto_ocr.py',
             'extension/manifest.json', 'extension/reading.js',
             'extension/i18n.js', 'extension/ui_catalog.json', 'extension/ui_languages.json', 'helper/balloonlens/ui_locale.py',
             'helper/balloonlens/presentation.py', 'helper/balloonlens/backends/claude_cli.py',

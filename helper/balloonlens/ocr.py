@@ -152,7 +152,7 @@ def ocr_doubts(text, conf, src_lang, capacity=None) -> list[str]:
     if _PUNCT_ONLY.fullmatch(compact):
         # "…!?" balloons are legitimate; only a large text box that yields nothing else is doubtful.
         return ["too_short"] if capacity and capacity >= 4 else []
-    letters = (_JA_LETTER if src_lang == "ja" else _EN_LETTER).findall(compact)
+    letters = (_JA_LETTER if src_lang == "ja" else _EN_LETTER).findall(compact) if src_lang in {"ja", "en"} else [c for c in compact if c.isalpha()]
     reasons = []
     if not letters:
         reasons.append("no_letters")
@@ -166,7 +166,7 @@ def ocr_doubts(text, conf, src_lang, capacity=None) -> list[str]:
 
 
 def reading_score(text, conf, src_lang, doubts) -> float:
-    letters = len((_JA_LETTER if src_lang == "ja" else _EN_LETTER).findall(text or ""))
+    letters = len((_JA_LETTER if src_lang == "ja" else _EN_LETTER).findall(text or "")) if src_lang in {"ja", "en"} else sum(c.isalpha() for c in text or "")
     return letters * (conf if conf is not None else 1.0) - 5 * len(doubts)
 
 
@@ -266,6 +266,7 @@ class OcrEngine:
         self.gpu = gpu
         self._reader = None
         self._manga = None
+        self._auto = None
         self._primed = False
         self._init_lock = threading.Lock()  # warmup thread and worker may both ask for a model
         # One inference at a time: the warm-up pass, a page read and a region read share the GPU. Re-entrant, because run() holds it
@@ -287,6 +288,13 @@ class OcrEngine:
                 from manga_ocr import MangaOcr
                 self._manga = MangaOcr(force_cpu=not self.gpu)
             return self._manga
+
+    @property
+    def auto(self):
+        if self._auto is None:
+            from .auto_ocr import AutoOCR
+            self._auto = AutoOCR(self)
+        return self._auto
 
     @property
     def ready(self) -> bool:
@@ -324,7 +332,7 @@ class OcrEngine:
             low_text=0.3,
             link_threshold=0.3,
             # Japanese columns shouldn't be glued across balloons; grouping merges them later.
-            width_ths=0.1 if src_lang == "ja" else 0.5,
+            width_ths=0.1 if src_lang in {"ja", "auto"} else 0.5,
             add_margin=0.05,
         )
         rects = [[int(x_min), int(b_min) + y0, int(x_max), int(b_max) + y0] for x_min, x_max, b_min, b_max in horizontal[0]]
@@ -357,7 +365,7 @@ class OcrEngine:
         out = m.model.generate(x, max_length=300).cpu()
         return [post_process(t) for t in m.tokenizer.batch_decode(out, skip_special_tokens=True)]
 
-    def _recognize_groups(self, grey: np.ndarray, groups: list[list[Rect]]) -> list[tuple[str, float | None]]:
+    def _recognize_groups(self, grey: np.ndarray, groups: list[list[Rect]], reader=None) -> list[tuple[str, float | None]]:
         """English reading of every group in one recognizer call. Each line comes back with its box, which names its group."""
         owner, flat = {}, []
         for gi, members in enumerate(groups):
@@ -365,7 +373,7 @@ class OcrEngine:
                 owner[tuple(r)] = gi
                 flat.append([r[0], r[2], r[1], r[3]])
         lines = [[] for _ in groups]
-        for pts, text, conf in self.reader.recognize(grey, horizontal_list=flat, free_list=[], detail=1):
+        for pts, text, conf in (reader or self.reader).recognize(grey, horizontal_list=flat, free_list=[], detail=1):
             xs, ys = [p[0] for p in pts], [p[1] for p in pts]
             gi = owner.get((int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))))
             if gi is not None:
@@ -375,6 +383,12 @@ class OcrEngine:
     def _read_crop(self, crop: Image.Image, src_lang: str):
         if src_lang == "ja":
             return self.manga(crop).strip(), None
+        if src_lang == "auto":
+            [(_, text, conf, _doubts, _retries)] = self.auto.read_spans(crop, [([[0, 0, crop.width, crop.height]], [0, 0, crop.width, crop.height])])
+            return text, conf
+        if src_lang != "en":
+            reader = self.auto.reader(src_lang)
+            return _join_lines(reader.recognize(np.asarray(crop.convert("L")), detail=1))
         return _join_lines(self.reader.readtext(np.asarray(crop), detail=1, paragraph=False))
 
     def _verify_all(self, crops, firsts, capacities, src_lang, reread, stats=None):
@@ -491,6 +505,8 @@ class OcrEngine:
     def _read_spans(self, img: Image.Image, spans, src_lang: str, stats=None):
         if not spans:
             return []
+        if src_lang == "auto":
+            return self.auto.read_spans(img, spans, stats)
         crops = [group_crop(img, members) for members, _ in spans]
         if src_lang == "ja":
             firsts = [(text.strip(), None) for text in self.manga_read(crops)]
@@ -501,7 +517,8 @@ class OcrEngine:
             def reread(variants):
                 return [(text.strip(), None) for text in self.manga_read(variants)]
         else:
-            firsts = self._recognize_groups(np.asarray(img.convert("L")), [members for members, _ in spans])
+            reader = self.auto.reader(src_lang) if src_lang != "en" else self.reader
+            firsts = self._recognize_groups(np.asarray(img.convert("L")), [members for members, _ in spans], reader=reader)
             capacities = [None] * len(spans)
             reread = self._reread_each(src_lang)
         checked = self._verify_all(crops, firsts, capacities, src_lang, reread, stats)

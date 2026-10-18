@@ -23,6 +23,7 @@ MESSAGES = {
     "queue_full": "번역 작업이 많아요. 잠시 뒤 다시 시도해 주세요.",
     "timeout": "번역 응답이 늦어졌어요. 이번 화면 번역으로 다시 시도해 주세요.",
     "unauthorized": "도우미 로그인 폴더와 프로그램의 데이터 폴더가 달라요.",
+    "ocr_model_missing": "선택한 원문 언어의 OCR 모델이 없어요. 자동 인식을 사용하거나 해당 모델을 준비해 주세요.",
 }
 
 
@@ -91,7 +92,9 @@ class DesktopClient:
         query = urllib.parse.urlencode({"src": settings["src"], "tgt": settings["tgt"],
                                         "model": settings["model"], "reading": settings["reading"],
                                         "priority": 1, "session": "desktop-" + uuid.uuid4().hex, "scope": "desktop"})
-        created = self.request("POST", "/v1/jobs?" + query, encoded.getvalue(), content_type="image/png", timeout=30)
+        options = json.dumps({"review": settings.get("review")}).encode("utf-8")
+        frame = len(options).to_bytes(4, "big") + options + encoded.getvalue()
+        created = self.request("POST", "/v1/jobs?" + query, frame, content_type="application/x-balloonlens-page", timeout=30)
         job_id = created["id"]
         finished = False
         deadline = time.monotonic() + 600

@@ -6,7 +6,7 @@ const NATIVE_HOST = "com.balloonlens.helper";
 const ALL_URLS = { origins: ["<all_urls>"] };
 const DEFAULTS = {
   uiLanguage: 'ko',
-  src: "ja",
+  src: "auto",
   tgt: "ko",
   model: "claude-haiku-5-5",
   reading: "rtl",
@@ -23,7 +23,12 @@ const CAPTURE_MIN_INTERVAL_MS = 600; // captureVisibleTab is limited to ~2 calls
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function settings() {
-  return { ...DEFAULTS, ...(await chrome.storage.local.get(Object.keys(DEFAULTS))) };
+  const saved = await chrome.storage.local.get([...Object.keys(DEFAULTS), 'sourceModeVersion']);
+  if (saved.sourceModeVersion !== 1) {
+    saved.src = 'auto';
+    await chrome.storage.local.set({src: 'auto', sourceModeVersion: 1});
+  }
+  return { ...DEFAULTS, ...saved };
 }
 
 // ---------- helper connection ----------

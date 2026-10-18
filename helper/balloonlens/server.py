@@ -13,12 +13,13 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from . import config, memory
 from . import layout as layouts
 from .backends.base import BackendError
+from .backends.prompts import valid_target
 from .cache import bbox_key
 from .jobs import QueueFull
 from .ocr import ImageTooLarge
-from .translate import LANG_NAMES, ModelPuller, TranslateError, ollama_tags
+from .translate import ModelPuller, TranslateError, ollama_tags
 
-SRC_LANGS = {"ja", "en"}
+SRC_LANGS = {"auto", "ja", "en", "ko", "zh-Hans", "zh-Hant"}
 READINGS = {"rtl", "ltr", "ttb"}
 HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 KEY_RE = re.compile(r"^\d{1,6},\d{1,6},\d{1,6},\d{1,6}$")
@@ -158,7 +159,7 @@ def check_hash(image_hash: str, src: str):
 
 
 def check_pair(src: str, tgt: str, model: str):
-    if src not in SRC_LANGS or tgt not in LANG_NAMES or tgt == src:
+    if src not in SRC_LANGS or not valid_target(tgt) or tgt == src:
         raise HTTPException(400, "unsupported_language_pair")
     if model not in config.SUPPORTED_MODELS:
         raise HTTPException(400, "unsupported_model")
@@ -360,7 +361,7 @@ def create_app(manager, token: str, port: int = config.PORT, tags=ollama_tags,
     def put_edit(body: EditIn):
         if not HASH_RE.match(body.image_hash) or len(body.bbox) != 4:
             raise HTTPException(400, "bad_params")
-        if body.src not in SRC_LANGS or body.tgt not in LANG_NAMES:
+        if body.src not in SRC_LANGS or not valid_target(body.tgt):
             raise HTTPException(400, "unsupported_language_pair")
         cache, h = manager.cache, body.image_hash
         src_text = body.src_text.strip()[:MAX_LINE_CHARS] if body.src_text is not None else None

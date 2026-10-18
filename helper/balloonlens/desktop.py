@@ -12,22 +12,20 @@ import threading
 import time
 import tkinter as tk
 from datetime import datetime
-from tkinter import messagebox, scrolledtext, ttk
+from tkinter import messagebox
 
 from PIL import ImageChops, ImageGrab
 
 from . import config
 from .backends.subscription_usage import ClaudeUsage
 from .backends.base import clean_env
+from .backends.prompts import valid_target
 from .desktop_client import DesktopClient, HelperError, TranslationCancelled
+from .desktop_controls import SOURCES, TARGETS, MODELS, DIRECTIONS, REVIEWS
 from .desktop_view import RegionSelector, TranslationOverlay
 from .desktop_windows import Hotkeys, WindowsDesktop
-from .ui_locale import UITranslator, LANGUAGE_CHOICES, language_key
+from .ui_locale import UITranslator, language_key
 
-SOURCES = {"일본어": "ja", "영어": "en"}
-TARGETS = {"한국어": "ko", "영어": "en", "일본어": "ja"}
-MODELS = {"Claude 구독": config.CLAUDE_MODEL, "로컬 Qwen3.5": "qwen3.5:9b"}
-DIRECTIONS = {"만화 ←": "rtl", "가로 →": "ltr", "웹툰 ↓": "ttb"}
 SETTINGS_PATH = config.DATA_DIR / "desktop.json"
 LOGIN_WAIT_S = 300.0  # how long the app keeps asking whether the Claude login window has finished
 LOGIN_POLL_S = 3.0
@@ -77,12 +75,20 @@ class DesktopApp:
         self.stable_since = 0
         self.capture_pending = self.manual_pending = False
         self._capture_restore = []
+        self._bar_position = None
+        self._drag_origin = None
+        self.paused = False
+        self._start_after_selection = False
+        self._last_snapshot = None
         self.ui = UITranslator()
         self._build()
         self.overlay = TranslationOverlay(root, native)
         self.control_excluded = native.exclude_capture(root)
+        self.capture_windows[0] = (root, self.control_excluded)
         self._load()
         self._apply_ui()
+        self._sync_bar()
+        self._translation_options = self._options()
         self.hotkeys = Hotkeys(self.events)
         root.protocol("WM_DELETE_WINDOW", self.close)
         root.after(100, self._events)
@@ -90,63 +96,85 @@ class DesktopApp:
         root.after(200, self._usage)
 
     def _build(self):
-        self.root.title("말풍선 렌즈 · 화면 범위 번역")
-        self.root.geometry("720x740")
-        self.root.minsize(610, 620)
-        ttk.Style().configure("TLabel", font=("맑은 고딕", 10))
-        outer = ttk.Frame(self.root, padding=18)
-        outer.pack(fill="both", expand=True)
-        ttk.Label(outer, text="화면 범위 번역", font=("맑은 고딕", 18, "bold")).pack(anchor="w")
-        ttk.Label(outer, text="어떤 브라우저·이미지 뷰어에서도 선택한 범위만 번역해요.").pack(anchor="w", pady=(5, 14))
-        locale_row = ttk.Frame(outer)
-        locale_row.pack(fill="x", pady=(0, 6))
-        ttk.Label(locale_row, text="화면 언어").pack(side="left", padx=(0, 8))
-        self.ui_language = tk.StringVar(value="한국어 (ko)")
-        language = ttk.Combobox(locale_row, textvariable=self.ui_language, values=LANGUAGE_CHOICES, width=25)
-        language.pack(side="left", fill="x", expand=True)
-        language.bind("<Return>", lambda _event: self.change_ui_language())
-        ttk.Button(locale_row, text="적용", command=self.change_ui_language).pack(side="left", padx=(6, 0))
-        ttk.Label(outer, text="화면 언어는 프로그램에 포함돼 있어요. 인터넷 연결이나 Claude 사용량 없이 바뀝니다.",
-                  wraplength=670).pack(anchor="w", pady=(0, 4))
-        self.language_status = tk.StringVar(value="")
-        ttk.Label(outer, textvariable=self.language_status, wraplength=670).pack(anchor="w", pady=(0, 8))
-        self.region_text = tk.StringVar(value="아직 범위를 선택하지 않았어요.")
-        ttk.Label(outer, textvariable=self.region_text).pack(anchor="w")
-        buttons = ttk.Frame(outer)
-        buttons.pack(fill="x", pady=10)
-        ttk.Button(buttons, text="범위 선택  Ctrl+Alt+R", command=self.select_region).pack(side="left")
-        self.toggle_button = ttk.Button(buttons, text="자동 번역 시작", command=self.toggle)
-        self.toggle_button.pack(side="left", padx=6)
-        ttk.Button(buttons, text="이번 화면 번역", command=self.translate_now).pack(side="left")
-        row = ttk.Frame(outer)
-        row.pack(fill="x", pady=(0, 12))
-        ttk.Button(row, text="원문 / 번역  Ctrl+Alt+O", command=self.peek).pack(side="left")
-        ttk.Label(row, text="Ctrl+Alt+T 번역 · Ctrl+Alt+S 시작/중지").pack(side="left", padx=10)
-        fields = ttk.Frame(outer)
-        fields.pack(fill="x")
-        self.src = tk.StringVar(value="일본어")
-        self.tgt = tk.StringVar(value="한국어")
-        self.model = tk.StringVar(value="Claude 구독")
-        self.reading = tk.StringVar(value="만화 ←")
-        self.ui_choices = []
-        for index, (label, values, variable) in enumerate((
-                ("원문", SOURCES, self.src), ("번역", TARGETS, self.tgt),
-                ("방식", MODELS, self.model), ("읽는 방향", DIRECTIONS, self.reading))):
-            ttk.Label(fields, text=label).grid(row=0, column=index, sticky="w", padx=(0, 8))
-            box = ttk.Combobox(fields, textvariable=variable, values=list(values), state="readonly", width=13)
-            box.grid(row=1, column=index, sticky="ew", padx=(0, 8), pady=(4, 0))
-            box.bind("<<ComboboxSelected>>", self._settings_changed)
-            box._ui_values = {value: value for value in values}
-            self.ui_choices.append((box, variable, values))
-            fields.columnconfigure(index, weight=1)
-        self.status = tk.StringVar(value="범위를 드래그하면 자동 번역을 시작해요.")
-        ttk.Label(outer, textvariable=self.status, wraplength=560, foreground="#0f766e").pack(anchor="w", pady=(14, 6))
-        self.usage = tk.StringVar(value="Claude 남은 사용량 확인 중…")
-        ttk.Label(outer, textvariable=self.usage, foreground="#616978", wraplength=560).pack(anchor="w", pady=(0, 12))
-        ttk.Button(outer, text="Claude 구독 로그인", command=self.login).pack(anchor="w", pady=(0, 10))
-        ttk.Label(outer, text="대사 목록 · 작은 말풍선에서 잘린 번역도 여기서 읽을 수 있어요.").pack(anchor="w")
-        self.transcript = scrolledtext.ScrolledText(outer, height=10, font=("맑은 고딕", 11), wrap="word", state="disabled")
-        self.transcript.pack(fill="both", expand=True, pady=(6, 0))
+        from .desktop_controls import build
+        build(self)
+
+    def _position_bar(self):
+        self.root.update_idletasks()
+        width, height = self.root.winfo_reqwidth(), self.root.winfo_reqheight()
+        left, top, right, bottom = self.native.bounds()
+        x, y = self._bar_position or (self.native.user32.GetSystemMetrics(0) - width - 24,
+                                     self.native.user32.GetSystemMetrics(1) - height - 72)
+        x, y = max(left, min(right - width, x)), max(top, min(bottom - height, y))
+        self.native.place(self.root, (x, y, x + width, y + height))
+
+    def _drag_start(self, event):
+        self._drag_origin = (event.x_root - self.root.winfo_x(), event.y_root - self.root.winfo_y())
+
+    def _drag_move(self, event):
+        if self._drag_origin is not None:
+            self._bar_position = (event.x_root - self._drag_origin[0], event.y_root - self._drag_origin[1])
+            self._position_bar()
+
+    def _place_popup(self, window):
+        window.update_idletasks()
+        left, top, right, bottom = self.native.bounds()
+        if window is self.settings_window:
+            self.settings_canvas.configure(width=self.settings_frame.winfo_reqwidth(),
+                                           height=min(bottom - top - 100, self.settings_frame.winfo_reqheight()))
+            window.update_idletasks()
+        width = max(450, window.winfo_reqwidth())
+        height = min(bottom - top - 24, window.winfo_reqheight())
+        x = max(left, min(right - width, self.root.winfo_x() + self.root.winfo_width() - width))
+        y = self.root.winfo_y() - height - 10
+        if y < top:
+            y = min(bottom - height, self.root.winfo_y() + self.root.winfo_height() + 10)
+        self.native.place(window, (x, max(top, y), x + width, max(top, y) + height))
+
+    def show_settings(self):
+        if self.selector is None:
+            self.settings_window.deiconify()
+            self._place_popup(self.settings_window)
+
+    def show_transcript(self):
+        self.transcript_window.deiconify()
+        self._place_popup(self.transcript_window)
+
+    def _sync_bar(self):
+        if self.active:
+            self.bar_status.set("자동 번역 중" if self.automatic.get() else "수동 번역")
+            self.toggle_button.configure(text="Ⅱ" if self.automatic.get() else "이번 화면 번역")
+            self.region_button.pack_forget()
+            self.stop_button.configure(state="normal")
+        else:
+            self.bar_status.set("일시정지" if self.paused else "준비됨")
+            self.toggle_button.configure(text="계속" if self.paused else "번역 시작")
+            self.region_button.pack(side="left", before=self.toggle_button, padx=2)
+            self.stop_button.configure(state="normal" if self.paused else "disabled")
+        self.peek_button.configure(text="번역 다시 보이기" if self.peeking else "원문 보기")
+        self.ui.apply_widgets(self.root)
+        self._position_bar()
+
+    @staticmethod
+    def _number(variable, default, lower, upper):
+        try:
+            value = max(lower, min(upper, float(variable.get())))
+        except (tk.TclError, ValueError):
+            value = default
+        variable.set(value)
+        return value
+
+    def _options(self):
+        result = {}
+        for key, (box, variable, choices) in zip(("src", "tgt", "model", "reading", "review"), self.ui_choices):
+            original = box._ui_values.get(variable.get(), variable.get()).strip()
+            result[key] = choices.get(original, original)
+        target = result["tgt"]
+        from .ui_locale import PACKS
+        result["tgt"] = PACKS["aliases"].get(target.lower(), target)
+        if result["src"] == result["tgt"]:
+            result["src"] = "auto"
+        return result
 
     def _load(self):
         try:
@@ -162,9 +190,24 @@ class DesktopApp:
         except (ValueError, TypeError):
             pass
         for key, variable, choices in (("src", self.src, SOURCES), ("tgt", self.tgt, TARGETS),
-                                       ("model", self.model, MODELS), ("reading", self.reading, DIRECTIONS)):
+                                       ("model", self.model, MODELS), ("reading", self.reading, DIRECTIONS),
+                                       ("review", self.review, REVIEWS)):
+            if key == "src" and saved.get("settingsVersion", 1) < 2:
+                continue  # automatic recognition replaces the previous manually selected default
             if saved.get(key) in choices:
                 variable.set(saved[key])
+            elif key == "tgt" and valid_target(saved.get(key)):
+                variable.set(saved[key])
+        for key, variable in (("automatic", self.automatic), ("showCorners", self.show_corners)):
+            if type(saved.get(key)) is bool:
+                variable.set(saved[key])
+        for key, variable in (("fontScale", self.font_scale), ("opacity", self.opacity), ("settleTime", self.settle_time)):
+            if type(saved.get(key)) in (int, float):
+                variable.set(saved[key])
+        position = saved.get("barPosition")
+        if isinstance(position, list) and len(position) == 2 and all(type(n) is int for n in position):
+            self._bar_position = tuple(position)
+        self._display_options()
         region = saved.get("region")
         if isinstance(region, list) and len(region) == 4 and all(type(n) is int for n in region):
             left, top, right, bottom = self.native.bounds()
@@ -172,12 +215,17 @@ class DesktopApp:
             if left <= x1 < x2 <= right and top <= y1 < y2 <= bottom and x2 - x1 >= 32 and y2 - y1 >= 32:
                 self.region = tuple(region)
                 self._region_label()
-                self.status.set("마지막 범위를 불러왔어요. 자동 번역 시작을 누르면 이어서 번역해요.")
+                self.status.set("마지막 범위를 불러왔어요. 번역 시작을 누르면 이어서 번역해요.")
 
     def _save(self):
         data = {key: box._ui_values.get(variable.get(), variable.get())
-                for key, (box, variable, _choices) in zip(("src", "tgt", "model", "reading"), self.ui_choices)}
-        data.update(region=self.region, uiLanguage=self.ui.language)
+                for key, (box, variable, _choices) in zip(("src", "tgt", "model", "reading", "review"), self.ui_choices)}
+        data.update(region=self.region, uiLanguage=self.ui.language, settingsVersion=2,
+                    automatic=self.automatic.get(), showCorners=self.show_corners.get(),
+                    fontScale=self._number(self.font_scale, 1.0, 0.7, 1.5),
+                    opacity=self._number(self.opacity, 1.0, 0.5, 1.0),
+                    settleTime=self._number(self.settle_time, 0.8, 0.4, 2.0),
+                    barPosition=[self.root.winfo_x(), self.root.winfo_y()])
         try:
             SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
             temporary = SETTINGS_PATH.with_name("desktop." + str(os.getpid()) + ".tmp")
@@ -199,6 +247,9 @@ class DesktopApp:
             box.configure(values=list(box._ui_values))
             variable.set(self.ui.text(original))
         self.ui.apply_widgets(self.root)
+        self.settings_window.title(self.ui.text("번역 설정"))
+        self.transcript_window.title(self.ui.text("대사 목록"))
+        self._position_bar()
 
     def change_ui_language(self):
         try:
@@ -208,6 +259,8 @@ class DesktopApp:
             self.language_status.set("이 언어의 화면 문구 파일이 없어요. 목록에서 언어를 선택해 주세요.")
             return
         self._apply_ui()
+        if self.settings_window.state() == "normal":
+            self._place_popup(self.settings_window)
         self._save()
         self.language_status.set("화면 언어를 바꿨어요.")
 
@@ -217,15 +270,42 @@ class DesktopApp:
         self.last_probe = self.sent_probe = self.active_probe = None
         self.stable_since = 0
         self.overlay.clear()
+        self._last_snapshot = None
 
     def _settings_changed(self, _event=None):
-        self._reset()
+        options = self._options()
+        if not valid_target(options["tgt"]):
+            self.status.set("목표 언어 이름이나 언어 코드를 입력해 주세요.")
+            return
+        if options != getattr(self, "_translation_options", options):
+            self._reset()
+        self._translation_options = options
+        self._display_options()
+        if self._last_snapshot is not None:
+            self.overlay.draw(self.region, self._last_snapshot)
+            if not self.peeking:
+                self.overlay.show()
+        elif self.active:
+            self._show_region()
+        self._sync_bar()
         self._save()
+
+    def _display_options(self):
+        self.overlay.configure_display(self._number(self.font_scale, 1.0, 0.7, 1.5),
+                                       self._number(self.opacity, 1.0, 0.5, 1.0), self.show_corners.get())
+        self._number(self.settle_time, 0.8, 0.4, 2.0)
+
+    def _show_region(self):
+        self.overlay.draw(self.region, {})
+        if not self.peeking:
+            self.overlay.show()
 
     def select_region(self):
         if self.closed or self.selector is not None:
             return
         self._reset()
+        self.settings_window.withdraw()
+        self.transcript_window.withdraw()
         self.root.withdraw()
         self.root.after(120, self._open_selector)
 
@@ -235,6 +315,8 @@ class DesktopApp:
 
     def _selected(self, region):
         self.selector = None
+        resume = self._start_after_selection
+        self._start_after_selection = False
         if self.closed:
             return
         self.root.deiconify()
@@ -242,32 +324,57 @@ class DesktopApp:
             self.region = region
             self._region_label()
             self._save()
-            self.start()
+            if self.active or resume:
+                self.start()
+            else:
+                self.status.set("범위를 선택했어요. 번역 시작을 누르세요.")
+                self._sync_bar()
         elif self.active:
             self.status.set("범위 선택을 취소했어요. 이전 범위에서 계속 번역해요.")
 
     def start(self):
         if not self.region:
+            self._start_after_selection = True
             return self.select_region()
+        if not valid_target(self._options()["tgt"]):
+            self.status.set("목표 언어 이름이나 언어 코드를 입력해 주세요.")
+            return self.show_settings()
         self._reset()
         self.active = True
+        self.paused = False
         self.peeking = False
-        self.toggle_button.configure(text="자동 번역 중지")
+        self.settings_window.withdraw()
+        self.transcript_window.withdraw()
+        self._sync_bar()
+        self._show_region()
         self.status.set("선택 영역을 보고 있어요. 화면이 바뀌고 잠시 멈추면 번역해요.")
+        if not self.automatic.get():
+            self.root.after_idle(self.translate_now)
 
     def stop(self):
         self.active = False
+        self.paused = False
         self.manual_pending = False
         self._reset()
-        self.toggle_button.configure(text="자동 번역 시작")
+        self._sync_bar()
         self.status.set("중지했어요. 선택 영역은 그대로 유지해요.")
 
     def toggle(self):
-        self.stop() if self.active else self.start()
+        if not self.active:
+            return self.start()
+        if not self.automatic.get():
+            return self.translate_now()
+        self.active = False
+        self.paused = True
+        self.manual_pending = False
+        self._reset()
+        self.status.set("일시정지했어요. 계속을 누르면 번역을 재개해요.")
+        self._sync_bar()
 
     def peek(self):
         self.peeking = not self.peeking
         self.overlay.hide() if self.peeking else self.overlay.show()
+        self._sync_bar()
 
     def _restore_capture_windows(self):
         for window in self._capture_restore:
@@ -283,11 +390,13 @@ class DesktopApp:
         if not self.overlay.capture_excluded and self.overlay.window.state() != "withdrawn":
             self.overlay.hide()
             self._capture_restore.append(self.overlay.window)
-        if not self.control_excluded and self.root.state() == "normal":
-            x, y, w, h = self.root.winfo_rootx(), self.root.winfo_rooty(), self.root.winfo_width(), self.root.winfo_height()
+        for window, excluded in self.capture_windows:
+            if excluded or window.state() != "normal":
+                continue
+            x, y, w, h = window.winfo_rootx(), window.winfo_rooty(), window.winfo_width(), window.winfo_height()
             if x < region[2] and x + w > region[0] and y < region[3] and y + h > region[1]:
-                self.root.withdraw()
-                self._capture_restore.append(self.root)
+                window.withdraw()
+                self._capture_restore.append(window)
 
         def capture():
             try:
@@ -323,12 +432,13 @@ class DesktopApp:
             self.last_probe = probe
             self.sent_probe = None
             self.stable_since = now
-            self.overlay.clear()
+            self._show_region()
+            self._last_snapshot = None
             if self.busy and _changed(probe, self.active_probe):
                 self.cancel.set()
                 self.generation += 1
             return
-        if now - self.stable_since >= 0.7 and not self.busy and _changed(probe, self.sent_probe):
+        if self.automatic.get() and now - self.stable_since >= self.settle_time.get() and not self.busy and _changed(probe, self.sent_probe):
             self._translate(image, probe)
 
     def translate_now(self):
@@ -350,15 +460,17 @@ class DesktopApp:
     def _translate(self, image, probe):
         if self.busy or self.closed or self.selector is not None:
             return
+        options = self._options()
+        if not valid_target(options["tgt"]):
+            self.status.set("목표 언어 이름이나 언어 코드를 입력해 주세요.")
+            return self.show_settings()
         self.busy = True
         self.last_probe = probe
         self.stable_since = time.monotonic()
         self.sent_probe = self.active_probe = probe
-        self.overlay.clear()
+        self._show_region()
         self.cancel = threading.Event()
         cancel, generation = self.cancel, self.generation
-        options = {key: choices[box._ui_values[variable.get()]]
-                   for key, (box, variable, choices) in zip(("src", "tgt", "model", "reading"), self.ui_choices)}
         self.status.set("번역 준비 중…")
 
         def work():
@@ -379,6 +491,7 @@ class DesktopApp:
         threading.Thread(target=work, name="desktop-translation", daemon=False).start()
 
     def _result(self, snapshot):
+        self._last_snapshot = snapshot
         self.overlay.draw(self.region, snapshot)
         if not self.peeking:
             self.overlay.show()
@@ -407,6 +520,7 @@ class DesktopApp:
                 elif kind == "login":
                     self.status.set(data)
                 elif kind == "progress" and data[0] == self.generation:
+                    self.bar_status.set("글자 인식 중" if data[1] == "ocr" else "번역 중")
                     self.status.set({"queued": "번역 순서를 기다리고 있어요…", "ocr": "선택 영역의 글자를 읽고 있어요…",
                                      "translate": "대사를 번역하고 있어요…"}.get(data[1], "번역 마무리 중…"))
                 elif kind == "result" and data[0] == self.generation:
@@ -414,9 +528,11 @@ class DesktopApp:
                 elif kind == "error" and data[0] == self.generation:
                     self.stop()
                     self.status.set(data[1])
+                    self.show_settings()
                 elif kind == "idle":
                     self.busy = False
                     self.active_probe = None
+                    self._sync_bar()
                     if self.manual_pending:
                         self.manual_pending = False
                         self.root.after_idle(self.translate_now)

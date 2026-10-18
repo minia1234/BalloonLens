@@ -152,6 +152,7 @@
   const ERRORS = {
     helper_unreachable: '도우미에 연결할 수 없어요',
     helper_timeout: '도우미 응답이 너무 늦어요',
+    ocr_model_missing: '선택한 원문 언어의 OCR 모델이 없어요. 자동 인식을 사용하거나 해당 모델을 준비해 주세요.',
     helper_start_timeout: '도우미가 켜지지 않았어요. 설치 창(BalloonLens-Setup.exe)에서 "상태 다시 확인"을 눌러 주세요. 8787 포트를 다른 프로그램이 쓰면 그 프로그램을 끄세요',
     native_missing: '도우미 설치가 필요해요. BalloonLens-Setup.exe를 한 번 실행해 주세요',
     pair_forbidden: '도우미가 이 확장을 허용하지 않았어요',
@@ -191,8 +192,9 @@
     const s = data.settings, settings = {};
     const pick = (key, ok) => { if (key in s && ok(s[key])) settings[key] = s[key]; };
     const text = (v, max) => typeof v === 'string' && v.length <= max;
-    pick('src', v => ['ja','en'].includes(v));
-    pick('tgt', v => ['ko','en','ja'].includes(v));
+    pick('src', v => ['auto','ja','en','ko','zh-Hans','zh-Hant'].includes(v));
+    pick('tgt', v => text(v, 80) && v.trim().length > 1 && v.trim().toLowerCase() !== 'auto' &&
+      /\p{L}/u.test(v) && /^[\p{L}\p{N} ()-]+$/u.test(v));
     pick('uiLanguage', v => text(v, 80) && v.trim().length > 0 && !/[\u0000-\u001f]/.test(v));
     pick('model', v => MODEL_IDS.includes(v));
     pick('reading', v => ['rtl','ltr','ttb'].includes(v));

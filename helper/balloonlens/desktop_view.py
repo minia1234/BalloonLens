@@ -84,9 +84,9 @@ def _wrap(text, font, width):
     return lines
 
 
-def _fitted(text, canvas, width, height):
+def _fitted(text, canvas, width, height, scale=1.0):
     width, height = max(1, width), max(1, height)
-    for size in range(24, 10, -1):
+    for size in range(round(24 * scale), round(11 * scale) - 1, -1):
         font = tkfont.Font(root=canvas, family="맑은 고딕", size=-size)
         lines = _wrap(text, font, width)
         if len(lines) * font.metrics("linespace") <= height:
@@ -115,8 +115,14 @@ class TranslationOverlay:
         self.images, self.fonts = [], []
         self.rect = None
         self.has_text = False
+        self.font_scale = 1.0
+        self.show_corners = True
         self.capture_excluded = native.exclude_capture(self.window)
         native.click_through(self.window)
+
+    def configure_display(self, scale, opacity, corners):
+        self.font_scale, self.show_corners = scale, corners
+        self.window.attributes("-alpha", opacity)
 
     def hide(self):
         self.window.withdraw()
@@ -162,11 +168,16 @@ class TranslationOverlay:
             if right - left < 8 or bottom - top < 8:
                 continue
             self.canvas.create_rectangle(left, top, right, bottom, fill="#fffefa", outline="")
-            text, font = _fitted(seg["tgt"], self.canvas, right - left - 6, bottom - top - 4)
+            text, font = _fitted(seg["tgt"], self.canvas, right - left - 6, bottom - top - 4, self.font_scale)
             self.fonts.append(font)
             self.canvas.create_text((left + right) / 2, (top + bottom) / 2, text=text, font=font,
                                     fill="#92400e" if seg["status"] == "review" else "#111827", justify="center")
         self.has_text = bool(shown)
+        if self.show_corners:
+            for x, y, dx, dy in ((2, 2, 1, 1), (width - 2, 2, -1, 1),
+                                  (2, height - 2, 1, -1), (width - 2, height - 2, -1, -1)):
+                self.canvas.create_line(x, y + dy * 10, x, y, x + dx * 10, y, fill="#27b7a8", width=2)
+            self.has_text = True
 
     def close(self):
         self.window.destroy()

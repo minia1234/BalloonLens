@@ -379,10 +379,13 @@ class JobManager:
         img = self.decode(job.image)
         job.timings["decode_ms"] = round((time.perf_counter() - t_decode) * 1000)
         job.width, job.height, job.image_hash = img.width, img.height, image_hash
-        key = ocr_key(image_hash, job.src, f"{config.OCR_VERSION}:{job.reading}")
+        ocr_version = config.OCR_VERSION
+        if job.src == "auto":
+            ocr_version += ":" + self.ocr.auto.signature
+        key = ocr_key(image_hash, job.src, f"{ocr_version}:{job.reading}")
 
         def read_region(bbox):
-            region_key = ocr_key(image_hash, job.src, f"{config.OCR_VERSION}:region:{bbox_key(bbox)}")
+            region_key = ocr_key(image_hash, job.src, f"{ocr_version}:region:{bbox_key(bbox)}")
             hit = self.cache.get_ocr(region_key)
             if hit is None:
                 text, conf, uncertain = self.ocr.read_region(img, bbox, job.src)
@@ -525,7 +528,8 @@ class JobManager:
         read as the OCR engine finds them (the ones at `visible` first), PIPELINE_CHUNK at a time. They go to the translator in one
         call when the page is read; on a long page the first PIPELINE_CHUNK go out earlier, while the rest is read. A cancelled job
         keeps what it read, so the next job for the same page starts from there."""
-        partial_key = ocr_key(job.image_hash, job.src, f"{config.OCR_VERSION}:partial")
+        partial_version = config.OCR_VERSION + (":" + self.ocr.auto.signature if job.src == "auto" else "")
+        partial_key = ocr_key(job.image_hash, job.src, f"{partial_version}:partial")
         known = {tuple(item["box"]): (item["text"], item["conf"], item["doubts"], 0)
                  for item in self.cache.get_ocr(partial_key) or []}
         read, queue, stats, marks = {}, [], {}, {}
@@ -576,6 +580,8 @@ class JobManager:
             pipe.submit(pending)  # the whole page, or what the early step left
         timings = job.timings
         timings["recognize_ms"] = recognize_ms
+        if "auto_scripts" in stats:
+            timings["ocr_scripts"] = stats["auto_scripts"]
         timings["ocr_retries"] = sum(item[3] for item in read.values())
         timings.update(ocr_retry_spans=stats.get("retry_spans", 0), ocr_retry_fixed=stats.get("retry_fixed", 0),
                        ocr_retry_ms=stats.get("retry_ms", 0), ocr_resumed=sum(1 for k in read if k in known))

@@ -12,7 +12,7 @@ import urllib.error
 import urllib.request
 
 from . import config
-from .backends.prompts import LANG_NAMES
+from .backends.prompts import language_name
 from .backends.validate import (  # noqa: F401  (re-exported)
     _page_quality, _script_ratio, clean_output, glossary_terms, looks_like_target, review_reasons,
 )
@@ -121,7 +121,7 @@ def ollama_unload(model: str):
 
 
 def gemma_prompt(text: str, src: str, tgt: str) -> str:
-    s, t = LANG_NAMES[src], LANG_NAMES[tgt]
+    s, t = language_name(src), language_name(tgt)
     return (
         f"You are a professional {s} ({src}) to {t} ({tgt}) translator. Your goal is to accurately convey the "
         f"meaning and nuances of the original {s} text while adhering to {t} grammar, vocabulary, and cultural "
@@ -131,12 +131,14 @@ def gemma_prompt(text: str, src: str, tgt: str) -> str:
 
 
 def qwen_messages(items: list[tuple[int, str]], src: str, tgt: str) -> list:
-    s, t = LANG_NAMES[src], LANG_NAMES[tgt]
+    s, t = language_name(src), language_name(tgt)
     system = (
         f"You translate comic dialogue from {s} to {t}. The user sends a JSON array of lines in reading order, "
         f'each {{"id", "text"}}. Reply with JSON {{"items": [{{"id", "text"}}]}} containing exactly one item per '
         f"input id. Translate every line separately into natural spoken {t}. Preserve negation, questions, "
         f"commands, numbers and names. Do not merge, split, summarize, explain, or add notes."
+        + (" Detect each line's source language automatically. If it is already in the target language, return it unchanged."
+           if src == "auto" else "")
     )
     user = json.dumps([{"id": i, "text": txt} for i, txt in items], ensure_ascii=False)
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
@@ -260,11 +262,13 @@ class Translator:
             if drafts is not None:
                 payload['drafts'] = [{'id': sid, 'text': text} for sid, text in drafts.items() if text]
             messages = [{"role": "system", "content":
-                         f"Translate comics from {LANG_NAMES[src]} to {LANG_NAMES[tgt]}. "
+                         f"Translate comics from {language_name(src)} to {language_name(tgt)}. "
                          'Return JSON {"items":[{"id":integer,"text":string,"review":boolean}]}. '
                          "Use the entire reference page and previous-page context to resolve ellipsis and tone. "
                          "Preserve speech acts: a statement stays a statement, a question stays a question; "
                          "do not turn an invitation into an order. "
+                         + ("Detect each line's source language automatically; mixed languages are allowed. "
+                            "If a line is already in the target language, return it unchanged. " if src == "auto" else "")
                          + ("한국어 만화 전문 번역가로서 출판된 만화처럼 자연스럽고 간결하게 번역하세요. "
                             "제안·명령·의문·독백의 구별과 주체를 유지하세요. "
                             "일상 대화에 문어체 명령(침묵하라 등)을 쓰지 말고 감정에 맞는 구어체를 쓰세요. "
