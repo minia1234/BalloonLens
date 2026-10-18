@@ -260,8 +260,8 @@
       const label = id === 'five_hour' ? '5시간' : '7일';
       const value = w?.remaining_percent;
       const remaining = typeof value === 'number' && Number.isFinite(value) ? `${value}%` : '확인 불가';
-      const reset = w?.resets_at ? ` (${formatTime(w.resets_at)} 초기화)` : '';
-      return ui(`${label} 남음 ${remaining}${reset}`);
+      const reset = w?.resets_at ? ` (${ui(`초기화 ${formatTime(w.resets_at)}`)})` : '';
+      return ui(`${label} 남음 ${remaining}`) + reset;
     });
     if (usage.stale) parts.unshift(ui('마지막 확인값'));
     if (usage.checked_at) parts.push(ui(`확인 ${formatTime(usage.checked_at)}`));

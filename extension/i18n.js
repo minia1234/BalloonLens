@@ -3,10 +3,7 @@
   if (globalThis.BalloonLensUI) return;
   const roots = new Set(), records = new WeakMap();
   const excluded = 'script,style,textarea,code,.layers,.seg,.src,.tgt,.ed-board,#workList,#suggestions,.demo-stage,.balloon-preview,[data-ui-raw]';
-  let language = 'ko', translations = {}, patterns = [], initialized, operation = 0;
-  const choices = ['한국어 (ko)', 'English (en)', '日本語 (ja)', '中文 (zh-Hans)', '繁體中文 (zh-Hant)',
-    'Español (es)', 'Français (fr)', 'Deutsch (de)', 'Italiano (it)', 'Português (pt)', 'Русский (ru)',
-    'Українська (uk)', 'العربية (ar)', 'हिन्दी (hi)', 'বাংলা (bn)', 'ไทย (th)', 'Tiếng Việt (vi)', 'Bahasa Indonesia (id)'];
+  let language = 'ko', translations = {}, patterns = [], initialized, choices = {};
   const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   function key(value) {
     value = String(value || 'ko').trim();
@@ -16,6 +13,7 @@
   }
   function set(data) {
     language = data.language;
+    choices = data.languages || {};
     translations = data.translations || {};
     patterns = Object.entries(translations).filter(([source]) => /\{\w+\}/.test(source))
       .sort((a, b) => b[0].length - a[0].length).map(([source, target]) => {
@@ -81,14 +79,14 @@
     }
     root.querySelectorAll('textarea[placeholder]').forEach((node) => value(node, 'placeholder'));
   }
-  async function request(locale, prepare = false) {
-    const result = await chrome.runtime.sendMessage({type: 'uiLocale', language: locale, prepare});
+  async function request(locale) {
+    const result = await chrome.runtime.sendMessage({type: 'uiLocale', language: locale});
     if (!result?.ok) throw new Error('ui_language_unavailable');
     return result.data;
   }
   async function load(locale) {
     const data = await request(locale);
-    set({...data, language: locale});
+    set(data);
     return data;
   }
   function init(root) {
@@ -107,40 +105,28 @@
   async function choose(locale, report) {
     locale = key(locale);
     if (!locale || locale.length > 80 || /[\u0000-\u001f]/.test(locale)) return;
-    const mine = ++operation;
-    report('화면 언어를 준비하고 있어요…');
     try {
-      let data = await request(locale, true);
-      while (data.state === 'loading' && mine === operation) {
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-        data = await request(locale);
-      }
-      if (mine !== operation) return;
+      const data = await request(locale);
       if (data.state !== 'ready') throw new Error('ui_language_unavailable');
-      set({...data, language: locale});
-      await chrome.storage.local.set({uiLanguage: locale});
+      set(data);
+      await chrome.storage.local.set({uiLanguage: data.language});
       report('화면 언어를 바꿨어요.');
     } catch {
-      if (mine === operation) report('언어를 준비하지 못했어요. Claude 로그인과 도우미 연결을 확인해 주세요.');
+      report('이 언어의 화면 문구 파일이 없어요. 목록에서 언어를 선택해 주세요.');
     }
   }
   function selector(root = document) {
     const input = root.querySelector('[data-ui-language]');
     if (!input) return;
     const list = root.querySelector('[data-ui-languages]');
-    const values = new Set(choices);
-    // ISO language names offered by this browser, plus an editable field for any language or regional variant.
-    const display = typeof Intl.DisplayNames === 'function' ? new Intl.DisplayNames(['en'], {type: 'language'}) : null;
-    if (display) for (let a = 97; a <= 122; a++) for (let b = 97; b <= 122; b++) {
-      const code = String.fromCharCode(a, b), name = display.of(code);
-      if (name && name !== code) values.add(`${name} (${code})`);
-    }
-    for (const label of values) {
-      const option = document.createElement('option');
-      option.value = label;
-      list.append(option);
-    }
-    initialized.then(() => { input.value = language; });
+    initialized.then(() => {
+      for (const [code, label] of Object.entries(choices)) {
+        const option = document.createElement('option');
+        option.value = `${label} (${code})`;
+        list.append(option);
+      }
+      input.value = language;
+    });
     const status = root.querySelector('[data-ui-language-status]');
     const report = (text) => { status.textContent = t(text); };
     root.querySelector('[data-ui-language-apply]').addEventListener('click', () => choose(input.value, report));
@@ -150,7 +136,7 @@
     if (area === 'local' && changes.uiLanguage) {
       const next = changes.uiLanguage.newValue || 'ko';
       load(next).then(() => {
-        for (const root of roots) root.querySelectorAll('[data-ui-language]').forEach((input) => { input.value = next; });
+        for (const root of roots) root.querySelectorAll('[data-ui-language]').forEach((input) => { input.value = language; });
       }).catch(() => {});
     }
   });

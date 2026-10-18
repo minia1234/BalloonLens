@@ -17,7 +17,6 @@ from .cache import bbox_key
 from .jobs import QueueFull
 from .ocr import ImageTooLarge
 from .translate import LANG_NAMES, ModelPuller, TranslateError, ollama_tags
-from .ui_locale import UILocaleService
 
 SRC_LANGS = {"ja", "en"}
 READINGS = {"rtl", "ltr", "ttb"}
@@ -127,10 +126,6 @@ class LineIn(BaseModel):
     page: list[ContextLine] = Field(default_factory=list, max_length=100)
 
 
-class UILanguageIn(BaseModel):
-    language: str = Field(min_length=1, max_length=80)
-
-
 class EditIn(BaseModel):
     image_hash: str
     src: str
@@ -211,22 +206,6 @@ def create_app(manager, token: str, port: int = config.PORT, tags=ollama_tags,
 
     def router():
         return getattr(manager, "router", None)
-
-    ui_locales = UILocaleService(router())
-
-    @app.get("/v1/ui-locale")
-    def ui_locale(language: str = "ko"):
-        try:
-            return ui_locales.snapshot(language)
-        except ValueError:
-            raise HTTPException(400, "invalid_ui_language")
-
-    @app.post("/v1/ui-locale")
-    def prepare_ui_locale(body: UILanguageIn):
-        try:
-            return ui_locales.snapshot(body.language, prepare=True)
-        except ValueError:
-            raise HTTPException(400, "invalid_ui_language")
 
     def require_backend(name: str):
         if name not in SUBSCRIPTION_BACKENDS or router() is None:

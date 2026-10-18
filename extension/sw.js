@@ -221,28 +221,30 @@ const BADGE = {
   off: { text: "" },
 };
 
-let uiCatalog;
+let uiCatalog, uiLanguages;
 async function builtinUILocale(language) {
   uiCatalog ??= fetch(chrome.runtime.getURL('ui_catalog.json')).then((response) => response.json());
-  const catalog = await uiCatalog;
-  return {state: 'ready', language, translations: language === 'ko' ? {} :
-    Object.fromEntries(Object.entries(catalog).map(([key, values]) => [key, values[language === 'ja' ? 1 : 0]]))};
+  uiLanguages ??= fetch(chrome.runtime.getURL('ui_languages.json')).then((response) => response.json());
+  const [catalog, packs] = await Promise.all([uiCatalog, uiLanguages]);
+  const requested = language.toLowerCase();
+  language = Object.keys(packs.languages).find((code) => code.toLowerCase() === requested || packs.languages[code].toLowerCase() === requested) ||
+    packs.aliases[requested] ||
+    Object.keys(packs.languages).find((code) => code === requested.split('-')[0]);
+  const state = language ? 'ready' : 'error';
+  language ||= 'en';
+  const translations = language === 'ko' ? {} :
+    Object.fromEntries(Object.entries(catalog).map(([key, values]) => [key, values[language === 'ja' ? 1 : 0]]));
+  const column = packs.order.indexOf(language);
+  if (column >= 0) for (const [key, values] of Object.entries(packs.strings)) translations[key] = values[column];
+  return {state, language, translations, languages: packs.languages};
 }
 
 const handlers = {
-  async uiLocale({language = 'ko', prepare = false}) {
+  async uiLocale({language = 'ko'}) {
     if (typeof language !== 'string' || !language.trim() || language.length > 80 || /[\u0000-\u001f]/.test(language)) {
       throw new Error('invalid_ui_language');
     }
-    if (['ko', 'en', 'ja'].includes(language)) return builtinUILocale(language);
-    try {
-      if (prepare) await ensureHelper();
-      return prepare
-        ? await helper('/v1/ui-locale', {method: 'POST', json: {language}, timeoutMs: 8000})
-        : await helper(`/v1/ui-locale?${new URLSearchParams({language})}`, {timeoutMs: 5000});
-    } catch {
-      return {...await builtinUILocale('en'), state: 'error', language, error: 'ui_language_unavailable'};
-    }
+    return builtinUILocale(language);
   },
   // ---- popup / options ----
   async setup({ checkNative } = {}) {

@@ -11,7 +11,6 @@ import sys
 import threading
 import time
 import tkinter as tk
-import urllib.parse
 from datetime import datetime
 from tkinter import messagebox, scrolledtext, ttk
 
@@ -23,7 +22,7 @@ from .backends.base import clean_env
 from .desktop_client import DesktopClient, HelperError, TranslationCancelled
 from .desktop_view import RegionSelector, TranslationOverlay
 from .desktop_windows import Hotkeys, WindowsDesktop
-from .ui_locale import UITranslator, LANGUAGE_CHOICES, builtin, cache_path, language_key
+from .ui_locale import UITranslator, LANGUAGE_CHOICES, language_key
 
 SOURCES = {"일본어": "ja", "영어": "en"}
 TARGETS = {"한국어": "ko", "영어": "en", "일본어": "ja"}
@@ -54,8 +53,8 @@ def usage_text(usage, translate=str):
         window = next((w for w in windows if w["id"] == key), {})
         value = window.get("remaining_percent")
         remaining = f"{value:g}%" if isinstance(value, (int, float)) else "확인 불가"
-        reset = f" · {_time_text(window['resets_at'])} 초기화" if window.get("resets_at") else ""
-        parts.append(translate(f"{label} 남음 {remaining}{reset}"))
+        reset = " · " + translate(f"초기화 {_time_text(window['resets_at'])}") if window.get("resets_at") else ""
+        parts.append(translate(f"{label} 남음 {remaining}") + reset)
     if usage.get("stale"):
         parts.append(translate("마지막 확인값"))
     return "\n".join(parts)
@@ -79,7 +78,6 @@ class DesktopApp:
         self.capture_pending = self.manual_pending = False
         self._capture_restore = []
         self.ui = UITranslator()
-        self.ui_operation = 0
         self._build()
         self.overlay = TranslationOverlay(root, native)
         self.control_excluded = native.exclude_capture(root)
@@ -108,7 +106,7 @@ class DesktopApp:
         language.pack(side="left", fill="x", expand=True)
         language.bind("<Return>", lambda _event: self.change_ui_language())
         ttk.Button(locale_row, text="적용", command=self.change_ui_language).pack(side="left", padx=(6, 0))
-        ttk.Label(outer, text="다른 언어는 이름이나 코드를 입력하세요. 처음 선택하면 Claude로 화면 문구를 번역해 저장해요.",
+        ttk.Label(outer, text="화면 언어는 프로그램에 포함돼 있어요. 인터넷 연결이나 Claude 사용량 없이 바뀝니다.",
                   wraplength=670).pack(anchor="w", pady=(0, 4))
         self.language_status = tk.StringVar(value="")
         ttk.Label(outer, textvariable=self.language_status, wraplength=670).pack(anchor="w", pady=(0, 8))
@@ -159,13 +157,7 @@ class DesktopApp:
             return
         try:
             locale = language_key(saved.get("uiLanguage", "ko"))
-            translations = None
-            if locale not in {"ko", "en", "ja"}:
-                try:
-                    translations = json.loads(cache_path(locale).read_text(encoding="utf-8"))
-                except (OSError, ValueError):
-                    translations = builtin("en")
-            self.ui.set(locale, translations)
+            self.ui.set(locale)
             self.ui_language.set(locale)
         except (ValueError, TypeError):
             pass
@@ -211,37 +203,13 @@ class DesktopApp:
     def change_ui_language(self):
         try:
             language = language_key(self.ui_language.get())
-        except ValueError:
-            return
-        self.ui_operation += 1
-        operation = self.ui_operation
-        if language in {"ko", "en", "ja"}:
             self.ui.set(language)
-            self._apply_ui()
-            self._save()
-            self.language_status.set("화면 언어를 바꿨어요.")
+        except ValueError:
+            self.language_status.set("이 언어의 화면 문구 파일이 없어요. 목록에서 언어를 선택해 주세요.")
             return
-        self.language_status.set("화면 언어를 준비하고 있어요…")
-
-        def prepare():
-            try:
-                self.client.ensure_running(self.login_cancel)
-                data = self.client.request("POST", "/v1/ui-locale", json.dumps({"language": language}).encode("utf-8"))
-                while not self.closed and operation == self.ui_operation:
-                    if data.get("state") == "ready":
-                        self.events.put(("ui_locale", (operation, language, data["translations"])))
-                        return
-                    if data.get("state") != "loading":
-                        break
-                    if self.login_cancel.wait(1):
-                        return
-                    query = urllib.parse.urlencode({"language": language})
-                    data = self.client.request("GET", "/v1/ui-locale?" + query)
-            except (OSError, HelperError, TranslationCancelled, ValueError, KeyError):
-                pass
-            self.events.put(("ui_locale_error", operation))
-
-        threading.Thread(target=prepare, name="desktop-ui-language", daemon=True).start()
+        self._apply_ui()
+        self._save()
+        self.language_status.set("화면 언어를 바꿨어요.")
 
     def _reset(self):
         self.generation += 1
@@ -438,13 +406,6 @@ class DesktopApp:
                     self.status.set(data)
                 elif kind == "login":
                     self.status.set(data)
-                elif kind == "ui_locale" and data[0] == self.ui_operation:
-                    self.ui.set(data[1], data[2])
-                    self._apply_ui()
-                    self._save()
-                    self.language_status.set("화면 언어를 바꿨어요.")
-                elif kind == "ui_locale_error" and data == self.ui_operation:
-                    self.language_status.set("언어를 준비하지 못했어요. Claude 로그인과 도우미 연결을 확인해 주세요.")
                 elif kind == "progress" and data[0] == self.generation:
                     self.status.set({"queued": "번역 순서를 기다리고 있어요…", "ocr": "선택 영역의 글자를 읽고 있어요…",
                                      "translate": "대사를 번역하고 있어요…"}.get(data[1], "번역 마무리 중…"))
