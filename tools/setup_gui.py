@@ -128,7 +128,7 @@ def ps_quote(text: str) -> str:
 
 
 def claude_login_args(claude_path: str, config_dir: Path) -> list[str]:
-    """A new PowerShell window with the isolated config folder; the user signs in there."""
+    """A new PowerShell window using the same account folder as the helper."""
     script = f"$env:CLAUDE_CONFIG_DIR = {ps_quote(str(config_dir))}; & {ps_quote(claude_path)} auth login"
     return ["powershell.exe", "-NoExit", "-NoProfile", "-Command", script]
 
@@ -184,7 +184,7 @@ class SetupWindow:
         self.rows: dict[str, tuple[tk.Label, tk.Label]] = {}
         self._build()
         self.win.after(100, self._poll)
-        self._log("처음이면 '전부 자동으로 준비'를 누르세요. 그다음 Claude 로그인 창에서 로그인하면 끝이에요.")
+        self._log("처음이면 '전부 자동으로 준비'를 누르세요. 기존 Claude 로그인을 사용하며, 로그인돼 있지 않을 때만 로그인하면 돼요.")
         self.refresh()
         if hold_seconds is not None:  # --hold is for screenshots: keep the window on top, close it on time
             self.win.attributes("-topmost", True)
@@ -194,7 +194,7 @@ class SetupWindow:
         frame = tk.Frame(self.win, padx=18, pady=14)
         frame.pack(fill="both", expand=True)
         tk.Label(frame, text=APP, font=("Malgun Gothic", 15, "bold")).pack(anchor="w")
-        tk.Label(frame, text="버튼으로 준비하고, 로그인만 직접 하세요. 로그인 정보는 이 창이 다루지 않아요.",
+        tk.Label(frame, text="버튼으로 준비하세요. 기존 Claude 로그인을 그대로 사용할 수 있어요.",
                  fg="#4b5563", wraplength=600, justify="left").pack(anchor="w", pady=(2, 10))
 
         status_box = tk.Frame(frame, bd=1, relief="solid", padx=12, pady=8)
@@ -334,7 +334,7 @@ class SetupWindow:
             if not path:
                 messagebox.showinfo(APP, "Claude Code가 없어요. https://claude.com/claude-code 에서 설치한 뒤 다시 확인하세요.")
                 return
-            config_dir = Path(self.status["dataDir"]) / "claude-config"
+            config_dir = Path(self.status.get("claudeConfigDir") or Path.home() / ".claude")
             config_dir.mkdir(parents=True, exist_ok=True)
             args = claude_login_args(path, config_dir)
         subprocess.Popen(args, creationflags=CREATE_NEW_CONSOLE)

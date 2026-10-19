@@ -17,9 +17,27 @@ TOKEN_PATH = DATA_DIR / "token.txt"
 METRICS_PATH = DATA_DIR / "metrics.jsonl"
 LOG_PATH = DATA_DIR / "helper.log"
 
-# Subscription CLI backends (v0.5.0). The Claude login lives in its own folder, so the reader's personal
-# CLAUDE.md and settings are never read by the translation calls.
-CLAUDE_CONFIG_DIR = Path(os.environ.get("BALLOONLENS_CLAUDE_CONFIG_DIR", DATA_DIR / "claude-config"))
+
+def claude_config_dir() -> Path:
+    """Reuse OAuth in place. Keep an existing app account; never copy or log credential contents."""
+    override = os.environ.get("BALLOONLENS_CLAUDE_CONFIG_DIR")
+    if override:
+        return Path(override).expanduser()
+    existing = DATA_DIR / "claude-config"
+    user = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude").expanduser()
+    for folder in (existing, user):
+        try:
+            data = json.loads((folder / ".credentials.json").read_text(encoding="utf-8"))
+            oauth = data.get("claudeAiOauth") if isinstance(data, dict) else None
+            if isinstance(oauth, dict) and (oauth.get("accessToken") or oauth.get("refreshToken")):
+                return folder
+        except (OSError, ValueError):
+            pass
+    return user
+
+
+# Authentication is reused; personal instructions/settings are excluded by the backend's CLI flags.
+CLAUDE_CONFIG_DIR = claude_config_dir()
 CLAUDE_SANDBOX_DIR = DATA_DIR / "sandbox"
 RUNTIME_DIR = DATA_DIR / "runtime"
 CLAUDE_EFFORT = os.environ.get("BALLOONLENS_CLAUDE_EFFORT", "low")

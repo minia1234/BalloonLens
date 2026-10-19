@@ -75,5 +75,6 @@ class Router:
                 "checked_at": st.checked_at,
                 "paused": self.quota.pause_info(name),
                 "subscription_usage": usage_status() if usage_status else None,
+                "login_command": backend.login_command() if hasattr(backend, "login_command") else None,
             })
         return out

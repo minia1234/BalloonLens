@@ -551,7 +551,7 @@ class DesktopApp:
         try:
             config.CLAUDE_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
             config.CLAUDE_SANDBOX_DIR.mkdir(parents=True, exist_ok=True)
-            env = clean_env(os.environ, {"CLAUDE_CONFIG_DIR": str(config.CLAUDE_CONFIG_DIR)})
+            env = clean_env(os.environ, {"CLAUDE_CONFIG_DIR": str(config.CLAUDE_CONFIG_DIR), "CLAUDE_CODE_SAFE_MODE": "1"})
             subprocess.Popen([*config.claude_command(), "auth", "login"], cwd=str(config.CLAUDE_SANDBOX_DIR),
                              env=env, creationflags=subprocess.CREATE_NEW_CONSOLE)
         except OSError:

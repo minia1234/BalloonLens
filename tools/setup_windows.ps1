@@ -1,4 +1,4 @@
-param([switch]$CheckOnly, [switch]$WithLocal, [switch]$SkipModel, [switch]$StatusJson)
+﻿param([switch]$CheckOnly, [switch]$WithLocal, [switch]$SkipModel, [switch]$StatusJson, [switch]$EnsureReady)
 
 # Minimum Claude Code version: `auth status` reports configDirectory from this version on (see claude_cli.py).
 $MinClaudeVersion = [version]'2.1.268'
@@ -28,6 +28,27 @@ function Test-VersionAtLeast([string]$Text, [version]$Minimum) {
 function Get-DataDir {
     if ($env:BALLOONLENS_DATA) { return $env:BALLOONLENS_DATA }
     return (Join-Path $env:LOCALAPPDATA 'BalloonLens')
+}
+
+function Get-ClaudeConfigDir {
+    if ($env:BALLOONLENS_CLAUDE_CONFIG_DIR) { return $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($env:BALLOONLENS_CLAUDE_CONFIG_DIR) }
+    $userDir = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $env:USERPROFILE '.claude' }
+    foreach ($folder in @((Join-Path (Get-DataDir) 'claude-config'), $userDir)) {
+        try {
+            $credential = Get-Content -LiteralPath (Join-Path $folder '.credentials.json') -Raw -ErrorAction Stop | ConvertFrom-Json
+            if ($credential.claudeAiOauth.accessToken -or $credential.claudeAiOauth.refreshToken) { return $folder }
+        } catch { }
+    }
+    return $userDir
+}
+
+function Get-SetupSignature {
+    $root = Split-Path $PSScriptRoot
+    $bytes = [byte[]]([IO.File]::ReadAllBytes((Join-Path $root 'helper\requirements.txt')) +
+                     [IO.File]::ReadAllBytes((Join-Path $PSScriptRoot 'setup_windows.ps1')))
+    $hash = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($hash.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant() }
+    finally { $hash.Dispose() }
 }
 
 # Folders the subscription backends use. Created here so the first call never has to guess their state.
@@ -109,10 +130,19 @@ function Get-ClaudeReport([string]$Path) {
     $report.version = (& $Path --version | Out-String).Trim()
     $report.versionOk = Test-VersionAtLeast $report.version $MinClaudeVersion
     $previous = $env:CLAUDE_CONFIG_DIR
-    $env:CLAUDE_CONFIG_DIR = Join-Path (Get-DataDir) 'claude-config'
+    $selected = Get-ClaudeConfigDir
+    $previousSafe = $env:CLAUDE_CODE_SAFE_MODE
+    $privateEnv = @{}
+    foreach ($name in @('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN',
+                         'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY')) {
+        $privateEnv[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+        [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+    }
+    $env:CLAUDE_CONFIG_DIR = $selected
+    $env:CLAUDE_CODE_SAFE_MODE = '1'
     try {
         # Only the JSON object counts: a notice printed before or after it must not make the status unreadable.
-        $text = (& $Path auth status | Out-String)
+        $text = (& $Path --setting-sources= auth status | Out-String)
         $info = $text.Substring($text.IndexOf('{'), $text.LastIndexOf('}') - $text.IndexOf('{') + 1) | ConvertFrom-Json
         $report.loggedIn = [bool]$info.loggedIn -and ($info.authMethod -in @('claude.ai', 'oauth_token'))
         if ($info.authMethod -in @('api_key', 'api_key_helper')) { $report.note = 'API 키로 로그인돼 있어요. 구독 로그인으로 바꿔 주세요.' }
@@ -120,6 +150,8 @@ function Get-ClaudeReport([string]$Path) {
         $report.note = '로그인 상태를 읽지 못했어요.'
     } finally {
         $env:CLAUDE_CONFIG_DIR = $previous
+        $env:CLAUDE_CODE_SAFE_MODE = $previousSafe
+        foreach ($name in $privateEnv.Keys) { [Environment]::SetEnvironmentVariable($name, $privateEnv[$name], 'Process') }
     }
     return $report
 }
@@ -144,11 +176,16 @@ function Write-Step([int]$Index, [int]$Total, [string]$Text) {
 }
 
 function Start-BalloonLensSetup {
-    param([switch]$CheckOnly, [switch]$WithLocal, [switch]$SkipModel)
+    param([switch]$CheckOnly, [switch]$WithLocal, [switch]$SkipModel, [switch]$EnsureReady)
     $ErrorActionPreference = 'Stop'
     $root = Split-Path $PSScriptRoot
     $helper = Join-Path $root 'helper'
     $python = Join-Path $helper '.venv\Scripts\python.exe'
+    $marker = Join-Path $helper '.venv\.balloonlens-ready'
+    $signature = Get-SetupSignature
+    $prepared = (Test-Path -LiteralPath $python) -and (Test-Path -LiteralPath $marker) -and
+                ((Get-Content -LiteralPath $marker -Raw).Trim() -eq $signature)
+    if ($EnsureReady -and $prepared) { return }
     if ($CheckOnly) {
         if (-not (Test-Dependencies $python)) { throw 'Python dependencies are missing or outdated. Run Setup.cmd.' }
         Write-Host '[ok] Python dependencies available.'
@@ -181,6 +218,10 @@ function Start-BalloonLensSetup {
         if ($gpu) { Invoke-Checked $python @('-c', 'import torch; assert torch.cuda.is_available(), ''Update NVIDIA driver for CUDA 12.4 and rerun Setup.cmd''') }
     }
     foreach ($dir in (Get-LocalDataDirs (Get-DataDir))) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+    if (-not $prepared -or -not $depsReady -or -not $cudaReady) {
+        Write-Host '[i] 기본 OCR 모델 준비 (일본어·영어). 기존 모델은 재사용해요.'
+        Invoke-Checked $python @('-c', 'import easyocr; easyocr.Reader([''en''], gpu=False, verbose=False); from manga_ocr import MangaOcr; MangaOcr(force_cpu=True)')
+    }
 
     # Local models are optional since v0.5.0: only -WithLocal installs Ollama and the default local model.
     if ($WithLocal) {
@@ -225,8 +266,9 @@ function Start-BalloonLensSetup {
     Write-Step 5 6 'Claude 상태 확인'
     Write-BackendReport (Get-ClaudeReport (Find-Claude))
     Write-Step 6 6 '끝'
+    [IO.File]::WriteAllText($marker, $signature)
     Write-Host "[ok] Setup complete. Chrome > Extensions > Developer mode > Load unpacked: $(Join-Path $root 'extension')"
-    Write-Host '구독 번역: 확장의 설정 화면에서 로그인 명령을 복사해 PowerShell에 붙여 넣으세요. 이 스크립트는 로그인하지 않아요.'
+    Write-Host '기존 Claude Code 구독 로그인을 재사용해요. 로그인돼 있지 않다면 프로그램 설정에서 로그인해 주세요.'
 }
 
 # What holds the helper port: 'free', 'balloonlens' (our helper answers pairing) or 'other:<process name>'.
@@ -256,12 +298,13 @@ function Get-StatusReport {
         portOwner = Get-PortOwner ([int]$port)
         ollama = [bool](Find-Ollama)
         claudePath = Find-Claude
+        claudeConfigDir = Get-ClaudeConfigDir
         claude = Get-ClaudeReport (Find-Claude)
     } | ConvertTo-Json -Depth 4
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
     if ($StatusJson) { Get-StatusReport; exit 0 }
-    try { Start-BalloonLensSetup -CheckOnly:$CheckOnly -WithLocal:$WithLocal -SkipModel:$SkipModel; exit 0 }
+    try { Start-BalloonLensSetup -CheckOnly:$CheckOnly -WithLocal:$WithLocal -SkipModel:$SkipModel -EnsureReady:$EnsureReady; exit 0 }
     catch { Write-Host "[x] $($_.Exception.Message)" -ForegroundColor Red; exit 1 }
 }

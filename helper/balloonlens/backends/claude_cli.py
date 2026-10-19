@@ -8,7 +8,8 @@ Why each flag is here (see the design doc, section 4.1):
 - `--system-prompt-file`: the translator instructions replace the default Claude Code prompt.
 - `--no-session-persistence`: nothing about the page is kept in the CLI's own history.
 - `--permission-prompts none`: a permission question that nobody can answer is refused, not waited on.
-- `CLAUDE_CONFIG_DIR`: a dedicated folder, so the reader's personal CLAUDE.md never reaches the model.
+- `CLAUDE_CONFIG_DIR`: the existing OAuth account, without copying its credentials.
+- `--safe-mode` and `--setting-sources ""`: exclude personal instructions, settings and plugins while keeping OAuth.
 """
 import os
 import shutil
@@ -64,7 +65,8 @@ class ClaudeCodeBackend:
 
     # ----- process helpers -----
     def _env(self) -> dict:
-        return clean_env(self.environ, {"CLAUDE_CONFIG_DIR": str(self.config_dir)})
+        return clean_env(self.environ, {"CLAUDE_CONFIG_DIR": str(self.config_dir),
+                                       "CLAUDE_CODE_SAFE_MODE": "1", "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"})
 
     def _ensure_dirs(self):
         for folder in (self.config_dir, self.sandbox_dir, self.runtime_dir):
@@ -90,6 +92,11 @@ class ClaudeCodeBackend:
     def usage_status(self):
         return self._account_usage.snapshot()
 
+    def login_command(self):
+        quote = lambda value: "'" + str(value).replace("'", "''") + "'"
+        command = " ".join(quote(part) for part in self.command)
+        return f"$env:CLAUDE_CONFIG_DIR = {quote(self.config_dir)}; & {command} auth login"
+
     # ----- status -----
     def _set(self, status: BackendStatus) -> BackendStatus:
         status.checked_at = self.clock()
@@ -105,7 +112,7 @@ class ClaudeCodeBackend:
         try:
             ver = self._run(["--version"], timeout=20)
             version = ver.stdout.decode("utf-8", "replace").strip()
-            auth = self._run(["auth", "status"], timeout=30)
+            auth = self._run(["--setting-sources", "", "auth", "status"], timeout=30)
         except OSError as e:
             return self._set(BackendStatus(self.backend_id, "backend_error", f"Claude Code를 실행하지 못했어요 ({type(e).__name__})."))
         parsed = parse_json_loose(auth.stdout.decode("utf-8", "replace"))
@@ -116,17 +123,17 @@ class ClaudeCodeBackend:
         reported_dir = str(info.get("configDirectory") or "")
         if reported_dir and not same_folder(reported_dir, self.config_dir):
             return self._set(BackendStatus(self.backend_id, "backend_error",
-                                           "로그인 폴더가 설정과 달라요. 전용 폴더 설정을 확인하세요.", version))
+                                           "로그인 폴더가 설정과 달라요. 선택된 Claude 로그인 폴더를 확인하세요.", version))
         if method in ("api_key", "api_key_helper"):
             return self._set(BackendStatus(self.backend_id, "api_key_detected",
                                            "API 키로 로그인되어 있어요. 구독 대신 API 과금이 될 수 있어요. "
-                                           "전용 폴더에서 API 키 설정을 지우고 구독 로그인을 다시 하세요.", version))
+                                           "Claude Code에서 구독 계정으로 로그인한 뒤 다시 확인하세요.", version))
         if method == "third_party" or (logged_in and method not in ("claude.ai", "oauth_token")):
             return self._set(BackendStatus(self.backend_id, "unsupported",
                                            f"지원하지 않는 인증 방식이에요: {method or '알 수 없음'}", version))
         if not logged_in or method in ("", "none"):
             return self._set(BackendStatus(self.backend_id, "not_logged_in",
-                                           "전용 폴더에서 로그인이 필요해요. 설정 화면의 로그인 명령을 한 번 실행하세요.", version))
+                                           "Claude 로그인이 필요해요. 설정 화면에서 로그인해 주세요.", version))
         ver_t = version_tuple(version)
         if ver_t is not None and ver_t < MIN_VERSION:
             return self._set(BackendStatus(self.backend_id, "backend_error",
@@ -192,6 +199,7 @@ class ClaudeCodeBackend:
         it a process that waits for a moment connects them, and their definitions add about 60k tokens to every
         request (measured); `--tools ""` alone only removes the built-in tools."""
         args = ["--model", model,
+                "--safe-mode", "--setting-sources", "",
                 "--system-prompt-file", str(system_path),
                 "--tools", "",
                 "--strict-mcp-config",

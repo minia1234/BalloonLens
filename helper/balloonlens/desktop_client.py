@@ -19,7 +19,7 @@ MESSAGES = {
     "not_installed": "Claude Code가 없어요. https://claude.com/claude-code 에서 설치한 뒤 다시 시도해 주세요.",
     "quota_paused": "Claude 사용량 한도로 대기 중이에요. 남은 사용량을 확인해 주세요.",
     "quota_exhausted": "Claude 사용량 한도에 도달했어요.",
-    "api_key_detected": "Claude 전용 폴더에서 구독 계정으로 로그인해 주세요.",
+    "api_key_detected": "Claude Code에서 구독 계정으로 로그인해 주세요.",
     "queue_full": "번역 작업이 많아요. 잠시 뒤 다시 시도해 주세요.",
     "timeout": "번역 응답이 늦어졌어요. 이번 화면 번역으로 다시 시도해 주세요.",
     "unauthorized": "도우미 로그인 폴더와 프로그램의 데이터 폴더가 달라요.",

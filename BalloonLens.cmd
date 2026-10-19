@@ -1,8 +1,12 @@
 @echo off
 setlocal
+if exist "%~dp0BalloonLens.exe" (
+    start "" "%~dp0BalloonLens.exe"
+    exit /b 0
+)
 set "desktop_python=%~dp0helper\.venv\Scripts\pythonw.exe"
-if not exist "%desktop_python%" (
-    echo Run Setup.cmd first to prepare BalloonLens.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\setup_windows.ps1" -EnsureReady
+if errorlevel 1 (
     pause
     exit /b 1
 )

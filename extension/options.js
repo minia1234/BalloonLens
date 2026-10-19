@@ -80,8 +80,8 @@ async function refresh() {
 const BACKEND_TITLE = { claude: "Claude Code 구독 · Haiku 5.5" };
 const LOGIN_HELP = {
   claude: {
-    cmd: '$env:CLAUDE_CONFIG_DIR = "$env:LOCALAPPDATA\\BalloonLens\\claude-config"; claude auth login',
-    note: "PowerShell에 한 줄로 붙여 넣고 실행하세요. 브라우저에서 Claude 계정으로 로그인하면 돼요. 이 폴더는 번역 전용이라 개인 설정(CLAUDE.md)을 읽지 않아요.",
+    cmd: 'claude auth login',
+    note: "기존 Claude Code 구독 로그인을 재사용해요. 로그인돼 있지 않다면 PowerShell에서 이 명령을 실행하세요. 번역에는 개인 지침·플러그인·MCP를 불러오지 않아요.",
   },
 };
 const NEEDS_LOGIN = ["not_installed", "not_logged_in", "api_key_detected", "unsupported"];
@@ -107,18 +107,19 @@ async function attempt(fn, failTitle) {
   }
 }
 
-function loginHelp(id) {
-  const info = LOGIN_HELP[id];
+function loginHelp(backend) {
+  const info = LOGIN_HELP[backend.id];
+  const command = backend.login_command || info.cmd;
   const box = document.createElement("div");
   box.className = "copy-box";
   const note = document.createElement("p");
   note.className = "muted";
   note.textContent = info.note;
   const code = document.createElement("code");
-  code.textContent = info.cmd;
+  code.textContent = command;
   const copy = button("명령 복사", async () => {
     try {
-      await navigator.clipboard.writeText(info.cmd);
+      await navigator.clipboard.writeText(command);
       copy.textContent = "복사했어요";
     } catch {
       copy.textContent = "복사하지 못했어요. 직접 선택해 주세요";
@@ -158,7 +159,7 @@ function backendCard(b) {
   const act = document.createElement("div");
   act.className = "bc-act";
 
-  if (NEEDS_LOGIN.includes(b.state)) body.append(loginHelp(b.id));
+  if (NEEDS_LOGIN.includes(b.state)) body.append(loginHelp(b));
  if (b.paused) {
     const p = document.createElement("p");
     p.className = "muted";

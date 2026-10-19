@@ -481,5 +481,14 @@
   "범위를 선택했어요. 번역 시작을 누르세요.": ["Region selected. Press Start translation.","範囲を選択しました。翻訳開始を押してください。"],
   "일시정지했어요. 계속을 누르면 번역을 재개해요.": ["Paused. Press Resume to continue translating.","一時停止しました。再開を押すと翻訳を続けます。"],
   "선택한 원문 언어의 OCR 모델이 없어요. 자동 인식을 사용하거나 해당 모델을 준비해 주세요.": ["The OCR model for this source language is missing. Use Auto-detect or install the model.","選択した原文言語のOCRモデルがありません。自動認識を使うか、モデルを用意してください。"],
-  "글자 인식 중": ["Reading text", "文字認識中"]
+  "글자 인식 중": ["Reading text", "文字認識中"],
+  "첫 실행 환경을 자동으로 준비해요.": ["Preparing BalloonLens automatically for the first run.", "初回起動に必要な環境を自動で準備しています。"],
+  "처음에는 수 GB를 다운로드할 수 있어요. 준비가 끝나면 프로그램이 열려요.": ["The first setup may download several GB. BalloonLens opens when setup finishes.", "初回は数GBのダウンロードが必要になることがあります。準備が終わるとプログラムが開きます。"],
+  "설치 기록 열기": ["Open setup log", "セットアップ記録を開く"],
+  "환경 준비에 실패했어요. 설치 기록을 확인한 뒤 다시 시도하세요.": ["Setup failed. Check the setup log, then try again.", "環境の準備に失敗しました。セットアップ記録を確認して再試行してください。"],
+  "로그인 폴더가 설정과 달라요. 선택된 Claude 로그인 폴더를 확인하세요.": ["The login folder differs from the configuration. Check the selected Claude account folder.", "ログインフォルダーが設定と異なります。選択したClaudeのログインフォルダーを確認してください。"],
+  "Claude Code에서 구독 계정으로 로그인한 뒤 다시 확인하세요.": ["Sign in to Claude Code with your subscription account, then check again.", "Claude Codeでサブスクリプションアカウントにログインして再確認してください。"],
+  "Claude Code에서 구독 계정으로 로그인해 주세요.": ["Sign in to Claude Code with your subscription account.", "Claude Codeでサブスクリプションアカウントにログインしてください。"],
+  "Claude 로그인이 필요해요. 설정 화면에서 로그인해 주세요.": ["Claude sign-in is required. Sign in from settings.", "Claudeへのログインが必要です。設定画面からログインしてください。"],
+  "기존 Claude Code 구독 로그인을 재사용해요. 로그인돼 있지 않다면 PowerShell에서 이 명령을 실행하세요. 번역에는 개인 지침·플러그인·MCP를 불러오지 않아요.": ["Your existing Claude Code subscription sign-in is reused. If needed, run this command in PowerShell to sign in. Translation excludes personal instructions, plugins and MCP.", "既存のClaude Codeのサブスクリプションログインを使用します。未ログインの場合はPowerShellでこのコマンドを実行してください。翻訳には個人の指示・プラグイン・MCPを読み込みません。"]
 }
