@@ -39,7 +39,7 @@ class AutoOCR:
 
     @property
     def signature(self):
-        return "auto-v1:" + ",".join(self.available)
+        return "auto-v2:" + ",".join(self.available)
 
     def reader(self, language):
         if language == "en":
@@ -49,7 +49,7 @@ class AutoOCR:
             raise BackendError("ocr_model_missing", language)
         if language not in self.readers:
             import easyocr
-            self.readers[language] = easyocr.Reader([code, "en"], gpu=False, detector=False,
+            self.readers[language] = easyocr.Reader([code, "en"], gpu=self.engine.gpu, detector=False,
                                                    model_storage_directory=str(model_folder()),
                                                    download_enabled=False, verbose=False)
         return self.readers[language]
@@ -72,26 +72,48 @@ class AutoOCR:
         groups = [members for members, _ in spans]
         first = self.engine._recognize_groups(grey, groups)
         best = [(self.score(text, conf, r"[A-Za-zÀ-ž]"), text, conf, "en") for text, conf in first]
-        for language in self.available:
-            if language in {"ja", "en"}:
-                continue
-            reader = self.reader(language)
-            for i, (text, conf) in enumerate(self.engine._recognize_groups(grey, groups, reader=reader)):
-                score = self.score(text, conf, PROFILES[language][2])
-                if score > best[i][0]:
-                    best[i] = score, text, conf, language
-        # Confident Latin readings need no Japanese re-read. Other scripts compete with Manga OCR locally.
-        pending = [i for i, (_score, text, conf, script) in enumerate(best)
-                   if not conf or conf < (0.85 if script in {"en", "latin"} else 0.7)
-                   or spans[i][1][3] - spans[i][1][1] > 1.6 * max(1, spans[i][1][2] - spans[i][1][0])]
-        if pending:
-            crops = [group_crop(image, spans[i][0]) for i in pending]
-            for i, text in zip(pending, self.engine.manga_read(crops)):
+        vertical = {i for i, (_, box) in enumerate(spans)
+                    if box[3] - box[1] > 1.6 * max(1, box[2] - box[0])}
+        settled = {i for i, (score, text, conf, _) in enumerate(best)
+                   if i not in vertical and conf is not None and conf >= 0.85 and score >= 1.65
+                   and len([c for c in text if c.isalpha()]) >= 3}
+        manga_seen = set()
+
+        def read_japanese(indices):
+            crops = [group_crop(image, spans[i][0]) for i in indices]
+            for i, text in zip(indices, self.engine.manga_read(crops)):
+                manga_seen.add(i)
                 kana = len(re.findall(r"[぀-ヿ]", text))
                 han = len(re.findall(r"[一-鿿]", text))
                 score = (1.45 if kana else 0.85 if han else -1) + min(kana + han, 12) * 0.01
                 if score > best[i][0]:
                     best[i] = score, text.strip(), None, "ja"
+                    if kana >= 2:
+                        settled.add(i)
+
+        # Vertical Japanese dialogue can use Manga OCR directly instead of visiting every installed recognizer.
+        if vertical:
+            read_japanese(sorted(vertical))
+        for language in self.available:
+            if language in {"ja", "en"}:
+                continue
+            indices = [i for i in range(len(spans)) if i not in settled]
+            if not indices:
+                break
+            reader = self.reader(language)
+            readings = self.engine._recognize_groups(grey, [groups[i] for i in indices], reader=reader)
+            for i, (text, conf) in zip(indices, readings):
+                score = self.score(text, conf, PROFILES[language][2])
+                if score > best[i][0]:
+                    best[i] = score, text, conf, language
+                    if conf is not None and conf >= 0.85 and score >= 1.65:
+                        settled.add(i)
+        # Confident Latin readings need no Japanese re-read. Other scripts compete with Manga OCR locally.
+        pending = [i for i, (_score, text, conf, script) in enumerate(best)
+                   if i not in settled and i not in manga_seen
+                   and (not conf or conf < (0.85 if script in {"en", "latin"} else 0.7))]
+        if pending:
+            read_japanese(pending)
         output = [None] * len(spans)
         scripts = stats.setdefault("auto_scripts", []) if stats is not None else []
         for script in dict.fromkeys(item[3] for item in best):

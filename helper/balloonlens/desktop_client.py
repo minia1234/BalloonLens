@@ -44,13 +44,37 @@ class DesktopClient:
     def __init__(self):
         self.base = f"http://{config.HOST}:{config.PORT}"
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+        self.token = None
+
+    def pair(self):
+        # The running local helper may belong to another BalloonLens data directory. Keep its token in memory only.
+        origin = "chrome-extension://" + next(iter(sorted(config.EXTENSION_IDS)))
+        request = urllib.request.Request(self.base + "/v1/pair", method="POST", headers={"Origin": origin})
+        with self.opener.open(request, timeout=3) as response:
+            token = json.load(response).get("token")
+        if not isinstance(token, str) or not token:
+            raise HelperError(MESSAGES["unauthorized"])
+        self.token = token
 
     def request(self, method, path, data=None, *, content_type="application/json", timeout=8):
-        token = config.TOKEN_PATH.read_text(encoding="utf-8").strip()
+        if self.token is None:
+            try:
+                self.token = config.TOKEN_PATH.read_text(encoding="utf-8").strip()
+            except FileNotFoundError:
+                self.pair()
         request = urllib.request.Request(self.base + path, data=data, method=method,
-                                         headers={"X-BalloonLens-Token": token, "Content-Type": content_type})
+                                         headers={"X-BalloonLens-Token": self.token, "Content-Type": content_type})
         try:
-            with self.opener.open(request, timeout=timeout) as response:
+            try:
+                response = self.opener.open(request, timeout=timeout)
+            except urllib.error.HTTPError as exc:
+                if exc.code != 401:
+                    raise
+                exc.close()
+                self.pair()
+                request.add_header("X-BalloonLens-Token", self.token)
+                response = self.opener.open(request, timeout=timeout)
+            with response:
                 return json.load(response)
         except urllib.error.HTTPError as exc:
             try:

@@ -373,7 +373,9 @@ class OcrEngine:
                 owner[tuple(r)] = gi
                 flat.append([r[0], r[2], r[1], r[3]])
         lines = [[] for _ in groups]
-        for pts, text, conf in (reader or self.reader).recognize(grey, horizontal_list=flat, free_list=[], detail=1):
+        recognizer = reader or self.reader
+        batch = 8 if getattr(recognizer, "device", "cpu") != "cpu" else 1
+        for pts, text, conf in recognizer.recognize(grey, horizontal_list=flat, free_list=[], detail=1, batch_size=batch):
             xs, ys = [p[0] for p in pts], [p[1] for p in pts]
             gi = owner.get((int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))))
             if gi is not None:

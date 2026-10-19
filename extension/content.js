@@ -33,6 +33,7 @@
   let helperDown = 0;
   let downToastShown = false;
   let lastError = "";
+  let cancelPending = Promise.resolve();
   let lastScroll = 0;
   let submitting = 0;
   let captureBusy = false;
@@ -329,7 +330,8 @@
     gen++;
     waiting.length = 0;
     closePopover();
-    send("cancelSession", { session }).catch(() => {});
+    const cancelledSession = session;
+    cancelPending = cancelPending.then(() => send("cancelSession", { session: cancelledSession })).catch(() => {});
     for (const e of entries) e.layer.remove();
     entries.clear();
     images.clear();
@@ -561,7 +563,8 @@
     const items = [];
     for (const img of document.querySelectorAll("img")) {
       const key = img.currentSrc || img.src;
-      if (!key || !eligible(img)) continue;
+      // The eviction loop uses this same distance. Never requeue an image it will immediately cancel.
+      if (!key || !eligible(img) || farFromScreen(img)) continue;
       const r = img.getBoundingClientRect();
       const rec = images.get(img);
       items.push({ img, top: r.top, bottom: r.bottom, left: r.left, right: r.right, queued: !!rec && rec.key === key });
@@ -664,6 +667,8 @@
     if (!alive(entry)) return;
     entry.status = "submitting";
     try {
+      await cancelPending;
+      if (!alive(entry)) return;
       const { jobId, fetchMs } = await send("translateImage", { url: rec.key, opts: jobOpts(priority, entry) });
       if (!alive(entry)) return void send("cancelJob", { jobId }).catch(() => {});
       Object.assign(entry, { jobId, fetchMs, priority, status: "queued" });
@@ -718,6 +723,8 @@
 
   async function captureInto(anchor, rect, priority) {
     const myGen = gen;
+    await cancelPending;
+    if (gen !== myGen || !mounted) return null;
     const scrollAt = lastScroll;
     host.style.visibility = "hidden"; // never OCR our own translations (section 7.2)
     await nextFrames(2);
